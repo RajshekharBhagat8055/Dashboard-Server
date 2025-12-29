@@ -360,7 +360,7 @@ const changePassword = async (req: Request, res: Response) => {
 // Create new user (admin functionality)
 const createUser = async (req: Request, res: Response) => {
   try {
-    const { username, password, email, role, createdBy } = req.body;
+    const { username, password, email, role, creditBalance, commissionRate, status, createdBy } = req.body;
 
     // Validate required fields
     if (!username || !password || !role) {
@@ -398,6 +398,9 @@ const createUser = async (req: Request, res: Response) => {
       email,
       role,
       uniqueId,
+      creditBalance: creditBalance || 0,
+      commissionRate: commissionRate || 0,
+      status: status || 'active',
       createdBy: createdBy || req.user?._id // Default to current user if not specified
     });
 

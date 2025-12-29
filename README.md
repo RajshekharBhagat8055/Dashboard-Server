@@ -86,21 +86,21 @@ The server will start on http://localhost:3000
 
 ## Available Scripts
 
--
+- 
 pm run dev - Start development server with hot reload
--
+- 
 pm run build - Build the project for production
--
+- 
 pm run start - Start the production server
 -
 pm run create-admin - Create initial admin user
--
+- 
 pm run lint - Run ESLint
--
+- 
 pm run test - Run tests
--
+- 
 pm run test:watch - Run tests in watch mode
--
+- 
 pm run clean - Clean build directory
 
 ## API Endpoints
