@@ -408,4 +408,217 @@ export class UserService {
             .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
             .lean();
     }
+
+    // ============ MUTATION METHODS ============
+
+    static async updateUser(userId: string, updates: Partial<HierarchyUser>, currentUser: any): Promise<HierarchyUser> {
+        // Check permissions
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Permission checks based on roles
+        if (currentUser.role === 'admin') {
+            // Admin can update anyone
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor can only update distributors, retailers, and users under them
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            // Distributor can only update retailers and users under them
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            // Retailer can only update users under them
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        // Update the user
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $set: updates },
+            { new: true }
+        ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+
+        if (!updatedUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        return updatedUser;
+    }
+
+    static async deleteUser(userId: string, currentUser: any): Promise<void> {
+        // Check permissions
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Permission checks based on roles
+        if (currentUser.role === 'admin') {
+            // Admin can delete anyone
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor can only delete distributors, retailers, and users under them
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            // Distributor can only delete retailers and users under them
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            // Retailer can only delete users under them
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        // Delete the user
+        await User.findByIdAndDelete(userId);
+    }
+
+    static async transferCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
+        // Check permissions
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        const currentUserDoc = await User.findById(currentUser._id);
+        if (!currentUserDoc) {
+            const error = new Error('Current user not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Check if current user has enough credit
+        if (currentUserDoc.creditBalance < amount) {
+            const error = new Error('Insufficient credit balance');
+            (error as any).status = 400;
+            throw error;
+        }
+
+        // Permission checks based on roles
+        if (currentUser.role === 'admin') {
+            // Admin can transfer to anyone
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor can only transfer to distributors, retailers, and users under them
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            // Distributor can only transfer to retailers and users under them
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            // Retailer can only transfer to users under them
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        // Perform the transfer
+        await User.findByIdAndUpdate(currentUser._id, { $inc: { creditBalance: -amount } });
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $inc: { creditBalance: amount } },
+            { new: true }
+        ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+
+        return updatedUser!;
+    }
+
+    static async adjustCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
+        // Check permissions
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Permission checks based on roles
+        if (currentUser.role === 'admin') {
+            // Admin can adjust anyone's credit
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor can only adjust distributors, retailers, and users under them
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            // Distributor can only adjust retailers and users under them
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            // Retailer can only adjust users under them
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        // Adjust the credit
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $inc: { creditBalance: amount } },
+            { new: true }
+        ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+
+        return updatedUser!;
+    }
 }

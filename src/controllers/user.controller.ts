@@ -404,6 +404,168 @@ const getOnlineUsers = async (req: Request, res: Response) => {
     }
 }
 
+// ============ MUTATION ENDPOINTS ============
+
+const updateUser = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+        const updates = req.body;
+
+        // Check permissions based on user role
+        const currentUser = req.user;
+        if (!currentUser) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const updatedUser = await UserService.updateUser(id, updates, currentUser);
+        return res.status(200).json({
+            success: true,
+            data: updatedUser,
+            message: "User updated successfully",
+        });
+    } catch (error: any) {
+        console.error(`Error in updateUser: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
+const deleteUser = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+
+        // Check permissions based on user role
+        const currentUser = req.user;
+        if (!currentUser) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        await UserService.deleteUser(id, currentUser);
+        return res.status(200).json({
+            success: true,
+            message: "User deleted successfully",
+        });
+    } catch (error: any) {
+        console.error(`Error in deleteUser: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
+const transferCredit = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+        const { amount } = req.body;
+
+        if (!amount || typeof amount !== 'number') {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid amount provided",
+            });
+        }
+
+        // Check permissions based on user role
+        const currentUser = req.user;
+        if (!currentUser) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const result = await UserService.transferCredit(id, amount, currentUser);
+        return res.status(200).json({
+            success: true,
+            data: result,
+            message: "Credit transferred successfully",
+        });
+    } catch (error: any) {
+        console.error(`Error in transferCredit: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
+const adjustCredit = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+        const { amount } = req.body;
+
+        if (!amount || typeof amount !== 'number') {
+            return res.status(400).json({
+                success: false,
+                message: "Invalid amount provided",
+            });
+        }
+
+        // Check permissions based on user role
+        const currentUser = req.user;
+        if (!currentUser) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const result = await UserService.adjustCredit(id, amount, currentUser);
+        return res.status(200).json({
+            success: true,
+            data: result,
+            message: "Credit adjusted successfully",
+        });
+    } catch (error: any) {
+        console.error(`Error in adjustCredit: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
 export {
     // Admin endpoints
     getAllSuperDistributors,
@@ -426,4 +588,10 @@ export {
 
     // Online users endpoint
     getOnlineUsers,
+
+    // Mutation endpoints
+    updateUser,
+    deleteUser,
+    transferCredit,
+    adjustCredit,
 };

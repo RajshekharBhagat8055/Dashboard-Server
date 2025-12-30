@@ -22,6 +22,12 @@ import {
 
     // Online users endpoint
     getOnlineUsers,
+
+    // Mutation endpoints
+    updateUser,
+    deleteUser,
+    transferCredit,
+    adjustCredit,
 } from "../controllers/user.controller";
 
 const userRouter = Router();
@@ -50,5 +56,11 @@ userRouter.get('/my-users-as-retailer', getMyUsersAsRetailer); // Retailers only
 
 // ============ ONLINE USERS ENDPOINTS ============
 userRouter.get('/online-users', getOnlineUsers); // All authenticated users
+
+// ============ MUTATION ENDPOINTS ============
+userRouter.put('/:id', updateUser); // Update user
+userRouter.delete('/:id', deleteUser); // Delete user
+userRouter.post('/:id/transfer-credit', transferCredit); // Transfer credit
+userRouter.post('/:id/adjust-credit', adjustCredit); // Adjust credit
 
 export default userRouter;
