@@ -161,6 +161,18 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
+        // Get users created directly by distributors under this super distributor
+        let distributorUsers: any[] = [];
+        if (distributorIds.length > 0) {
+            distributorUsers = await User.find({
+                createdBy: { $in: distributorIds },
+                role: 'user'
+            })
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+            .sort({createdAt: -1})
+            .lean();
+        }
+
         // Get users created by retailers under this super distributor
         let retailerUsers: any[] = [];
         if (allRetailerIds.length > 0) {
@@ -173,8 +185,8 @@ export class UserService {
             .lean();
         }
 
-        // Combine both arrays and sort by creation date
-        const allUsers = [...directUsers, ...retailerUsers]
+        // Combine all arrays and sort by creation date
+        const allUsers = [...directUsers, ...distributorUsers, ...retailerUsers]
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         return allUsers;
@@ -226,11 +238,20 @@ export class UserService {
 
         const allRetailerIds = [...directRetailers, ...distributorRetailers].map(r => r._id);
 
-        // Get users count (both via retailers and direct creation)
+        // Get users count (via retailers, distributors, and direct creation)
         const directUsersCount = await User.countDocuments({
             createdBy: superDistributorId,
             role: 'user'
         });
+
+        // Users created directly by distributors under this super distributor
+        let distributorUsersCount = 0;
+        if (distributorIds.length > 0) {
+            distributorUsersCount = await User.countDocuments({
+                createdBy: { $in: distributorIds },
+                role: 'user'
+            });
+        }
 
         let retailerUsersCount = 0;
         if (allRetailerIds.length > 0) {
@@ -239,7 +260,7 @@ export class UserService {
                 role: 'user'
             });
         }
-        const usersCount = directUsersCount + retailerUsersCount;
+        const usersCount = directUsersCount + distributorUsersCount + retailerUsersCount;
 
         // Get total points from all hierarchy levels
         const totalPointsResult = await User.aggregate([
@@ -250,6 +271,7 @@ export class UserService {
                         { createdBy: superDistributorId, role: 'retailer' },     // Direct retailers
                         { createdBy: { $in: distributorIds }, role: 'retailer' }, // Via distributors
                         { createdBy: superDistributorId, role: 'user' },         // Direct users
+                        { createdBy: { $in: distributorIds }, role: 'user' },    // Users created by distributors
                         { createdBy: { $in: allRetailerIds }, role: 'user' }     // Via retailers
                     ]
                 }
@@ -290,14 +312,29 @@ export class UserService {
 
         const retailerIds = retailers.map(r => r._id);
 
+        // Get users created directly by this distributor
+        const directUsers = await User.find({
+            createdBy: distributorId,
+            role: 'user'
+        })
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        .sort({createdAt: -1})
+        .lean();
+
         // Get users under those retailers
-        return await User.find({
+        const retailerUsers = await User.find({
             createdBy: { $in: retailerIds },
             role: 'user'
         })
         .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
         .sort({createdAt: -1})
         .lean();
+
+        // Combine both arrays and sort by creation date
+        const allUsers = [...directUsers, ...retailerUsers]
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+        return allUsers;
     }
 
     static async getDistributorStats(distributorId: string): Promise<HierarchyStats> {
@@ -315,11 +352,18 @@ export class UserService {
 
         const retailerIds = retailers.map(r => r._id);
 
-        // Get users count
-        const usersCount = await User.countDocuments({
+        // Get users count (direct users + users via retailers)
+        const directUsersCount = await User.countDocuments({
+            createdBy: distributorId,
+            role: 'user'
+        });
+
+        const retailerUsersCount = await User.countDocuments({
             createdBy: { $in: retailerIds },
             role: 'user'
         });
+
+        const usersCount = directUsersCount + retailerUsersCount;
 
         // Get total points
         const totalPointsResult = await User.aggregate([
@@ -327,6 +371,7 @@ export class UserService {
                 $match: {
                     $or: [
                         { createdBy: distributorId, role: 'retailer' },
+                        { createdBy: distributorId, role: 'user' }, // Direct users
                         { createdBy: { $in: retailerIds }, role: 'user' }
                     ]
                 }
