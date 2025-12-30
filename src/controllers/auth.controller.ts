@@ -9,6 +9,7 @@ const login = async (req: Request, res: Response) => {
 
     // Validate input
     if (!username || !password) {
+      console.error("Login validation error: Username and password are required");
       return res.status(400).json({
         success: false,
         message: "Username and password are required"

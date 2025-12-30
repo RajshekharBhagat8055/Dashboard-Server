@@ -1,0 +1,54 @@
+import { Router } from "express";
+import { authenticate } from "../middleware/auth";
+import {
+    // Admin endpoints
+    getAllSuperDistributors,
+    getDistributors,
+    getRetailers,
+    getUsers,
+    getStats,
+
+    // Super distributor specific endpoints
+    getMyDistributors,
+    getMyRetailers,
+    getMyUsers,
+
+    // Distributor specific endpoints
+    getMyRetailersAsDistributor,
+    getMyUsersAsDistributor,
+
+    // Retailer specific endpoints
+    getMyUsersAsRetailer,
+
+    // Online users endpoint
+    getOnlineUsers,
+} from "../controllers/user.controller";
+
+const userRouter = Router();
+
+// All routes require authentication
+userRouter.use(authenticate);
+
+// ============ ADMIN ENDPOINTS (admin sees everything) ============
+userRouter.get('/super-distributors', getAllSuperDistributors); // Admin only
+userRouter.get('/distributors', getDistributors); // Admin or Super Distributor
+userRouter.get('/retailers', getRetailers); // Admin, Super Distributor, or Distributor
+userRouter.get('/users', getUsers); // Admin, Super Distributor, Distributor, or Retailer
+userRouter.get('/stats', getStats); // All roles get their relevant stats
+
+// ============ SUPER DISTRIBUTOR SPECIFIC ENDPOINTS ============
+userRouter.get('/my-distributors', getMyDistributors); // Super distributors only
+userRouter.get('/my-retailers', getMyRetailers); // Super distributors only
+userRouter.get('/my-users', getMyUsers); // Super distributors only
+
+// ============ DISTRIBUTOR SPECIFIC ENDPOINTS ============
+userRouter.get('/my-retailers-as-distributor', getMyRetailersAsDistributor); // Distributors only
+userRouter.get('/my-users-as-distributor', getMyUsersAsDistributor); // Distributors only
+
+// ============ RETAILER SPECIFIC ENDPOINTS ============
+userRouter.get('/my-users-as-retailer', getMyUsersAsRetailer); // Retailers only
+
+// ============ ONLINE USERS ENDPOINTS ============
+userRouter.get('/online-users', getOnlineUsers); // All authenticated users
+
+export default userRouter;

@@ -44,6 +44,8 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       });
     }
 
+    console.log("User Role:", user.role);
+
     // Attach user info to request
     req.user = {
       _id: user._id.toString(),

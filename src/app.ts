@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import authRouter from './routes/auth.router';
 import { connectDB } from './config/connectDB';
+import userRouter from './routes/user.route';
 
 // Load environment variables
 dotenv.config();
@@ -71,6 +72,7 @@ app.get('/', (req, res) => {
 
 // API routes
 app.use('/api/auth', authRouter);
+app.use('/api/users', userRouter);
 
 // 404 handler
 app.use('*', (req, res) => {
