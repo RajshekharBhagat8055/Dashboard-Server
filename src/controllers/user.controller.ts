@@ -378,6 +378,33 @@ const getMyUsersAsRetailer = async (req: Request, res: Response) => {
     }
 }
 
+const getUserById = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        const targetUserId = req.params.id;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const user = await UserService.getUserById(targetUserId, req.user);
+        return res.status(200).json({
+            success: true,
+            data: user,
+        });
+    } catch (error: any) {
+        console.error(`Error in getUserById: ${error}`);
+        const status = error.status || 500;
+        return res.status(status).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
 const getOnlineUsers = async (req: Request, res: Response) => {
     try{
         const userId = req.user?._id;
@@ -566,6 +593,70 @@ const adjustCredit = async (req: Request, res: Response) => {
     }
 }
 
+const banUser = async( req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if(!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            })
+        }
+        const targetUserId = req.params.id;
+        const targetUser = await UserService.getUserById(targetUserId, req.user);
+        if(!targetUser) {
+            return res.status(404).json({
+                success: false, 
+                message: "User not found",
+            })
+        }
+        const result = await UserService.banUser(targetUser._id, req.user);
+        return res.status(200).json({
+            success: true, 
+            message: "User banned successfully",
+            data: result,
+        })
+    } catch(error: any) {
+        console.error(`Error in banUser: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
+const unBanUser = async( req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if(!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            })
+        }
+        const targetUserId = req.params.id;
+        const targetUser = await UserService.getUserById(targetUserId, req.user);
+        if(!targetUser) {
+            return res.status(404).json({
+                success: false,
+                message: "User not found",
+            })
+        }
+        const result = await UserService.unbanUser(targetUser._id, req.user);
+        return res.status(200).json({
+            success: true,
+            message: "User unbanned successfully",
+            data: result,
+        })
+    } catch(error: any) {
+        console.error(`Error in unBanUser: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
 export {
     // Admin endpoints
     getAllSuperDistributors,
@@ -589,9 +680,14 @@ export {
     // Online users endpoint
     getOnlineUsers,
 
+    // Individual user endpoint
+    getUserById,
+
     // Mutation endpoints
     updateUser,
     deleteUser,
     transferCredit,
     adjustCredit,
+    banUser,
+    unBanUser,
 };

@@ -448,6 +448,36 @@ export class UserService {
 
     // ============ USER METHODS ============
 
+    static async getUserById(userId: string, currentUser: any): Promise<any> {
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Check if current user can view this user
+        if (currentUser.role !== 'admin' && targetUser.parentId?.toString() !== currentUser._id) {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        // Return user data with fields needed for editing
+        return {
+            _id: targetUser._id,
+            username: targetUser.username,
+            email: targetUser.email,
+            role: targetUser.role,
+            uniqueId: targetUser.uniqueId,
+            creditBalance: targetUser.creditBalance,
+            commissionRate: targetUser.commissionRate,
+            isActive: targetUser.isActive,
+            parentId: targetUser.parentId,
+            createdAt: targetUser.createdAt
+        };
+    }
+
     static async getUserProfile(userId: string): Promise<HierarchyUser | null> {
         return await User.findById(userId)
             .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
@@ -500,7 +530,7 @@ export class UserService {
             userId,
             { $set: updates },
             { new: true }
-        ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+        ).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
 
         if (!updatedUser) {
             const error = new Error('User not found');
@@ -665,5 +695,112 @@ export class UserService {
         ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
 
         return updatedUser!;
+    }
+
+    static async banUser(userId: string, currentUser: any): Promise<HierarchyUser> {
+        const targetUser = await User.findById(userId);
+        if(!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+        if (currentUser.role === 'admin') {
+            // Admin can ban anyone
+        } else if (currentUser.role === 'super_distributor') {
+            if(targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            if(!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            if(targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+        if(targetUser.isBanned) {
+            const error = new Error('User already banned');
+            (error as any).status = 400;
+            throw error;
+        }
+        const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        if(!updatedUser) {
+            const error = new Error('Failed to ban user');
+            (error as any).status = 500;
+            throw error;
+        }
+        return updatedUser;
+    }
+    static async unbanUser(userId: string, currentUser: any): Promise<HierarchyUser> {
+        // Check permissions
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+    
+        // Permission checks based on roles (same as banUser)
+        if (currentUser.role === 'admin') {
+            // Admin can unban anyone
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor can only unban distributors, retailers, and users under them
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            // Distributor can only unban retailers and users under them
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            // Retailer can only unban users under them
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+    
+        // Check if user is not banned
+        if (!targetUser.isBanned) {
+            const error = new Error('User is not banned');
+            (error as any).status = 400;
+            throw error;
+        }
+    
+        // Unban the user (but don't automatically activate - let admin decide)
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $set: { isBanned: false, isActive: true  } }, // Keep isActive as is, let admin decide separately
+            { new: true }
+        ).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+    
+        if (!updatedUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+    
+        return updatedUser;
     }
 }

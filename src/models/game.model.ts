@@ -1,19 +1,55 @@
 import mongoose, { Document, Schema, Model } from "mongoose";
 
+// Money transaction interface
+export interface MoneyTransaction {
+  timestamp: string;
+  amount: number;
+  type: 'earned' | 'spent' | 'purchase' | 'sale';
+  description: string;
+}
+
+// Card sold detailed interface
+export interface CardSoldDetailed {
+  card_name: string;
+  enhancement?: string;
+  edition?: string;
+  sale_price: number;
+  timestamp: string;
+}
+
+// Consumable effect interface
+export interface ConsumableEffect {
+  consumable_type: 'tarot' | 'planet' | 'spectral';
+  consumable_name: string;
+  effect_type: 'joker_added' | 'card_enhanced' | 'card_added' | 'buff_applied';
+  effect_details: any;
+  timestamp: string;
+}
+
+// Booster selection interface
+export interface BoosterSelection {
+  booster_type: string;
+  cards_selected: any[];
+  timestamp: string;
+}
+
+// Main game session interface
 export interface IGameSession extends Document {
   // Core session identification
   session_id: number;
   machine_id: string;
 
-  // Session timing
-  start_time: number;
-  end_time: number;
-  time_spent_seconds: number;
+  // Session timing (human-readable format: "2024-12-25 14:30:56")
+  start_time: string;
+  end_time: string;
+  time_spent_readable: string; // e.g., "7m 13s", "1h 23m 45s"
 
   // Money tracking
   starting_money: number;
   current_money: number;
   money_spent: number;
+  money_earned: number;
+  money_transactions: MoneyTransaction[]; // Detailed log of all money changes with timestamps
 
   // Round-by-round data (comprehensive tracking)
   rounds: any[];
@@ -47,11 +83,14 @@ export interface IGameSession extends Document {
   cards_discarded: any[];
   cards_purchased: any[];
   cards_sold: any[];
+  cards_sold_detailed: CardSoldDetailed[]; // Detailed info about sold cards
 
   // Consumables
   tarots_used: any[];
   planets_used: any[];
+  consumable_effects: ConsumableEffect[]; // Detailed effects from consumables
   boosters_opened: any[];
+  booster_selections: BoosterSelection[]; // Detailed selections from booster packs
 
   // Run metadata
   run_number: number;
@@ -104,7 +143,7 @@ export interface GameStats {
   avg_ante: number;
 }
 
-const GameSessionSchema = new Schema({
+const GameSessionSchema = new Schema<IGameSession>({
   // Core session identification
   session_id: {
     type: Number,
@@ -119,18 +158,18 @@ const GameSessionSchema = new Schema({
     index: true
   },
 
-  // Session timing
+  // Session timing (human-readable format: "2024-12-25 14:30:56")
   start_time: {
-    type: Number,
+    type: String,
     required: true
   },
   end_time: {
-    type: Number,
-    default: 0
+    type: String,
+    default: ""
   },
-  time_spent_seconds: {
-    type: Number,
-    default: 0
+  time_spent_readable: {
+    type: String,
+    default: ""  // e.g., "7m 13s", "1h 23m 45s"
   },
 
   // Money tracking
@@ -146,10 +185,18 @@ const GameSessionSchema = new Schema({
     type: Number,
     default: 0
   },
+  money_earned: {
+    type: Number,
+    default: 0
+  },
+  money_transactions: {
+    type: [Object],
+    default: []  // Detailed log of all money changes with timestamps
+  },
 
   // Round-by-round data (comprehensive tracking)
   rounds: {
-    type: Array,
+    type: [Object],
     default: []
   },
   rounds_completed: {
@@ -159,11 +206,11 @@ const GameSessionSchema = new Schema({
 
   // Purchases and sales
   purchases: {
-    type: Array,
+    type: [Object],
     default: []
   },
   sales: {
-    type: Array,
+    type: [Object],
     default: []
   },
 
@@ -185,21 +232,21 @@ const GameSessionSchema = new Schema({
     default: {}
   },
   joker_abilities_used: {
-    type: Array,
+    type: [Object],
     default: []
   },
   joker_purchased: {
-    type: Array,
+    type: [Object],
     default: []
   },
   joker_sold: {
-    type: Array,
+    type: [Object],
     default: []
   },
 
   // Ante/blind progression
   ante_progression: {
-    type: Array,
+    type: [Object],
     default: []
   },
   max_ante_reached: {
@@ -223,34 +270,46 @@ const GameSessionSchema = new Schema({
 
   // Card actions
   cards_played: {
-    type: Array,
+    type: [Object],
     default: []
   },
   cards_discarded: {
-    type: Array,
+    type: [Object],
     default: []
   },
   cards_purchased: {
-    type: Array,
+    type: [Object],
     default: []
   },
   cards_sold: {
-    type: Array,
+    type: [Object],
     default: []
+  },
+  cards_sold_detailed: {
+    type: [Object],
+    default: []  // Detailed info about sold cards (enhancement, edition, sale price, etc.)
   },
 
   // Consumables
   tarots_used: {
-    type: Array,
+    type: [Object],
     default: []
   },
   planets_used: {
-    type: Array,
+    type: [Object],
     default: []
   },
+  consumable_effects: {
+    type: [Object],
+    default: []  // Detailed effects from consumables (added jokers, cards, buffs)
+  },
   boosters_opened: {
-    type: Array,
+    type: [Object],
     default: []
+  },
+  booster_selections: {
+    type: [Object],
+    default: []  // Detailed selections from booster packs
   },
 
   // Run metadata
@@ -293,8 +352,29 @@ const GameSessionSchema = new Schema({
 
 // Virtual for session duration (computed field)
 GameSessionSchema.virtual('duration_minutes').get(function(this: IGameSession): number {
-  if (this.time_spent_seconds > 0) {
-    return Number((this.time_spent_seconds / 60).toFixed(2));
+  if (this.time_spent_readable) {
+    // Parse readable time format like "7m 13s" or "1h 23m 45s"
+    const timeMatch = this.time_spent_readable.match(/(\d+)h\s*(\d+)m\s*(\d+)s|(\d+)m\s*(\d+)s|(\d+)s/);
+    if (timeMatch) {
+      let hours = 0, minutes = 0, seconds = 0;
+
+      if (timeMatch[1] && timeMatch[2] && timeMatch[3]) {
+        // Format: "1h 23m 45s"
+        hours = parseInt(timeMatch[1]);
+        minutes = parseInt(timeMatch[2]);
+        seconds = parseInt(timeMatch[3]);
+      } else if (timeMatch[4] && timeMatch[5]) {
+        // Format: "7m 13s"
+        minutes = parseInt(timeMatch[4]);
+        seconds = parseInt(timeMatch[5]);
+      } else if (timeMatch[6]) {
+        // Format: "45s"
+        seconds = parseInt(timeMatch[6]);
+      }
+
+      const totalMinutes = hours * 60 + minutes + seconds / 60;
+      return Number(totalMinutes.toFixed(2));
+    }
   }
   return 0;
 });
@@ -315,51 +395,6 @@ GameSessionSchema.methods.getSummary = function(this: IGameSession): GameSession
 
 // Static method to get statistics
 GameSessionSchema.statics.getStats = async function(machineId: string | null = null): Promise<GameStats[]> {
-  const match = machineId ? { machine_id: machineId } : {};
-
-  return await this.aggregate([
-    { $match: match },
-    {
-      $group: {
-        _id: '$outcome',
-        count: { $sum: 1 },
-        avg_score: { $avg: '$final_score' },
-        max_score: { $max: '$final_score' },
-        avg_ante: { $avg: '$max_ante_reached' }
-      }
-    }
-  ]);
-};
-
-// Indexes for efficient queries
-GameSessionSchema.index({ machine_id: 1, start_time: -1 });
-GameSessionSchema.index({ outcome: 1 });
-GameSessionSchema.index({ synced_at: -1 });
-
-// Virtual for session duration (computed field)
-GameSessionSchema.virtual('duration_minutes').get(function() {
-  if (this.time_spent_seconds > 0) {
-    return (this.time_spent_seconds / 60).toFixed(2);
-  }
-  return 0;
-});
-
-// Method to get session summary
-GameSessionSchema.methods.getSummary = function() {
-  return {
-    session_id: this.session_id,
-    machine_id: this.machine_id,
-    run_number: this.run_number,
-    outcome: this.outcome,
-    final_score: this.final_score,
-    max_ante: this.max_ante_reached,
-    rounds: this.rounds_completed,
-    duration_minutes: this.duration_minutes
-  };
-};
-
-// Static method to get statistics
-GameSessionSchema.statics.getStats = async function(machineId = null) {
   const match = machineId ? { machine_id: machineId } : {};
 
   return await this.aggregate([
