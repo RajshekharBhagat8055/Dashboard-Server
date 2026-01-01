@@ -34,27 +34,51 @@ export class UserService {
     }
 
     static async getAllDistributors(): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const distributors = await User.find({
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically calculate isOnline based on recent activity
+        return distributors.map(distributor => ({
+            ...distributor,
+            isOnline: !!(distributor.lastActivity && distributor.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getAllRetailers(): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const retailers = await User.find({
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically calculate isOnline based on recent activity
+        return retailers.map(retailer => ({
+            ...retailer,
+            isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getAllUsers(): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const users = await User.find({
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically set isOnline based on recent activity
+        return users.map(user => ({
+            ...user,
+            isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getAdminStats(): Promise<HierarchyStats> {
@@ -81,15 +105,25 @@ export class UserService {
     // ============ SUPER DISTRIBUTOR METHODS ============
 
     static async getDistributorsUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const distributors = await User.find({
             createdBy: superDistributorId,
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically calculate isOnline based on recent activity
+        return distributors.map(distributor => ({
+            ...distributor,
+            isOnline: !!(distributor.lastActivity && distributor.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getRetailersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
         // Get all distributors under this super distributor
         const distributors = await User.find({
             createdBy: superDistributorId,
@@ -103,7 +137,7 @@ export class UserService {
             createdBy: superDistributorId,
             role: 'retailer'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
@@ -114,19 +148,25 @@ export class UserService {
                 createdBy: { $in: distributorIds },
                 role: 'retailer'
             })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
             .sort({createdAt: -1})
             .lean();
         }
 
-        // Combine both arrays and sort by creation date
+        // Combine both arrays, dynamically calculate isOnline, and sort by creation date
         const allRetailers = [...directRetailers, ...distributorRetailers]
+            .map(retailer => ({
+                ...retailer,
+                isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+            }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         return allRetailers;
     }
 
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
         // Get distributors under super distributor
         const distributors = await User.find({
             createdBy: superDistributorId,
@@ -157,7 +197,7 @@ export class UserService {
             createdBy: superDistributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
@@ -168,7 +208,7 @@ export class UserService {
                 createdBy: { $in: distributorIds },
                 role: 'user'
             })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
             .sort({createdAt: -1})
             .lean();
         }
@@ -180,13 +220,17 @@ export class UserService {
                 createdBy: { $in: allRetailerIds },
                 role: 'user'
             })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
             .sort({createdAt: -1})
             .lean();
         }
 
-        // Combine all arrays and sort by creation date
+        // Combine all arrays, dynamically calculate isOnline, and sort by creation date
         const allUsers = [...directUsers, ...distributorUsers, ...retailerUsers]
+            .map(user => ({
+                ...user,
+                isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+            }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         return allUsers;
@@ -295,15 +339,25 @@ export class UserService {
     // ============ DISTRIBUTOR METHODS ============
 
     static async getRetailersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const retailers = await User.find({
             createdBy: distributorId,
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically calculate isOnline based on recent activity
+        return retailers.map(retailer => ({
+            ...retailer,
+            isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getUsersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
         // Get retailers under this distributor
         const retailers = await User.find({
             createdBy: distributorId,
@@ -317,7 +371,7 @@ export class UserService {
             createdBy: distributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
@@ -326,12 +380,16 @@ export class UserService {
             createdBy: { $in: retailerIds },
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
-        // Combine both arrays and sort by creation date
+        // Combine both arrays, dynamically calculate isOnline, and sort by creation date
         const allUsers = [...directUsers, ...retailerUsers]
+            .map(user => ({
+                ...user,
+                isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+            }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
         return allUsers;
@@ -395,12 +453,20 @@ export class UserService {
     // ============ RETAILER METHODS ============
 
     static async getUsersUnderRetailer(retailerId: string): Promise<HierarchyUser[]> {
-        return await User.find({
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+        const users = await User.find({
             createdBy: retailerId,
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
+
+        // Dynamically calculate isOnline based on recent activity
+        return users.map(user => ({
+            ...user,
+            isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+        }));
     }
 
     static async getRetailerStats(retailerId: string): Promise<HierarchyStats> {
@@ -437,12 +503,17 @@ export class UserService {
     // ============ ONLINE USERS METHODS ============
 
     static async getOnlineUsers(): Promise<HierarchyUser[]> {
+        // Consider users online if they have been active within the last 30 minutes
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
         return await User.find({
-            isOnline: true,
-            role: 'user' // Only show end users who are online
+            lastActivity: { $gte: thirtyMinutesAgo },
+            role: 'user', // Only show end users who are online
+            isActive: true, // Must be active
+            isBanned: false // Must not be banned
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin playPoints winPoints claimPoints endPoints')
-        .sort({lastLogin: -1})
+        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
+        .sort({lastActivity: -1})
         .lean();
     }
 
