@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth";
+import { logAction } from "../middleware/logging";
 import {
     // Admin endpoints
     getAllSuperDistributors,
@@ -39,6 +40,8 @@ const userRouter = Router();
 
 // All routes require authentication
 userRouter.use(authenticate);
+// All authenticated routes are logged
+userRouter.use(logAction);
 
 // ============ ADMIN ENDPOINTS (admin sees everything) ============
 userRouter.get('/super-distributors', getAllSuperDistributors); // Admin only

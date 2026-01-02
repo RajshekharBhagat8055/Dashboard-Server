@@ -11,6 +11,14 @@ export interface HierarchyUser {
     isBanned: boolean;
     createdAt: Date;
     role: string;
+    lastActivity?: Date;
+    lastLogin?: Date;
+    playPoints?: number;
+    winPoints?: number;
+    claimPoints?: number;
+    endPoints?: number;
+    email?: string;
+    commissionRate?: number;
 }
 
 export interface HierarchyStats {
@@ -42,10 +50,10 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically calculate isOnline based on recent activity
+        // Use stored isOnline status from database
         return distributors.map(distributor => ({
             ...distributor,
-            isOnline: !!(distributor.lastActivity && distributor.lastActivity >= thirtyMinutesAgo)
+            isOnline: distributor.isOnline || false
         }));
     }
 
@@ -58,10 +66,10 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically calculate isOnline based on recent activity
+        // Use stored isOnline status from database
         return retailers.map(retailer => ({
             ...retailer,
-            isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+            isOnline: retailer.isOnline || false
         }));
     }
 
@@ -77,7 +85,7 @@ export class UserService {
         // Dynamically set isOnline based on recent activity
         return users.map(user => ({
             ...user,
-            isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+            isOnline: user.isOnline || false
         }));
     }
 
@@ -114,10 +122,10 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically calculate isOnline based on recent activity
+        // Use stored isOnline status from database
         return distributors.map(distributor => ({
             ...distributor,
-            isOnline: !!(distributor.lastActivity && distributor.lastActivity >= thirtyMinutesAgo)
+            isOnline: distributor.isOnline || false
         }));
     }
 
@@ -157,7 +165,7 @@ export class UserService {
         const allRetailers = [...directRetailers, ...distributorRetailers]
             .map(retailer => ({
                 ...retailer,
-                isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+                isOnline: retailer.isOnline || false
             }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -229,7 +237,7 @@ export class UserService {
         const allUsers = [...directUsers, ...distributorUsers, ...retailerUsers]
             .map(user => ({
                 ...user,
-                isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+                isOnline: user.isOnline || false
             }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -348,10 +356,10 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically calculate isOnline based on recent activity
+        // Use stored isOnline status from database
         return retailers.map(retailer => ({
             ...retailer,
-            isOnline: !!(retailer.lastActivity && retailer.lastActivity >= thirtyMinutesAgo)
+            isOnline: retailer.isOnline || false
         }));
     }
 
@@ -388,7 +396,7 @@ export class UserService {
         const allUsers = [...directUsers, ...retailerUsers]
             .map(user => ({
                 ...user,
-                isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+                isOnline: user.isOnline || false
             }))
             .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -462,10 +470,10 @@ export class UserService {
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically calculate isOnline based on recent activity
+        // Use stored isOnline status from database
         return users.map(user => ({
             ...user,
-            isOnline: !!(user.lastActivity && user.lastActivity >= thirtyMinutesAgo)
+            isOnline: user.isOnline || false
         }));
     }
 
@@ -502,19 +510,54 @@ export class UserService {
 
     // ============ ONLINE USERS METHODS ============
 
-    static async getOnlineUsers(): Promise<HierarchyUser[]> {
+    static async getOnlineUsers(currentUser: any): Promise<HierarchyUser[]> {
         // Consider users online if they have been active within the last 30 minutes
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
-        return await User.find({
-            lastActivity: { $gte: thirtyMinutesAgo },
-            role: 'user', // Only show end users who are online
-            isActive: true, // Must be active
-            isBanned: false // Must not be banned
-        })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
-        .sort({lastActivity: -1})
-        .lean();
+        let onlineUsers: any[] = [];
+
+        if (currentUser.role === 'admin') {
+            // Admin sees all online users in the system
+            onlineUsers = await User.find({
+                lastActivity: { $gte: thirtyMinutesAgo },
+                isActive: true,
+                isBanned: false
+            })
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
+            .sort({lastActivity: -1})
+            .lean();
+        } else if (currentUser.role === 'super_distributor') {
+            // Super distributor sees online users in their hierarchy
+            // Get all users created by this super distributor and their descendants
+            const hierarchyUsers = await UserService.getUsersUnderSuperDistributor(currentUser._id.toString());
+
+            // Filter to only online users
+            onlineUsers = hierarchyUsers.filter(user =>
+                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
+            );
+        } else if (currentUser.role === 'distributor') {
+            // Distributor sees online users in their hierarchy
+            const hierarchyUsers = await UserService.getUsersUnderDistributor(currentUser._id.toString());
+
+            // Filter to only online users
+            onlineUsers = hierarchyUsers.filter(user =>
+                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
+            );
+        } else if (currentUser.role === 'retailer') {
+            // Retailer sees online users in their hierarchy
+            const hierarchyUsers = await UserService.getUsersUnderRetailer(currentUser._id.toString());
+
+            // Filter to only online users
+            onlineUsers = hierarchyUsers.filter(user =>
+                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
+            );
+        }
+
+        // Use the stored isOnline status from database (set during login/logout)
+        return onlineUsers.map(user => ({
+            ...user,
+            isOnline: user.isOnline || false
+        }));
     }
 
     // ============ USER METHODS ============
@@ -806,7 +849,7 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
-        const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false, isOnline: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
         if(!updatedUser) {
             const error = new Error('Failed to ban user');
             (error as any).status = 500;

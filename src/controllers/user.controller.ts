@@ -407,16 +407,16 @@ const getUserById = async (req: Request, res: Response) => {
 
 const getOnlineUsers = async (req: Request, res: Response) => {
     try{
-        const userId = req.user?._id;
-        if(!userId) {
+        const currentUser = req.user;
+        if(!currentUser) {
             return res.status(401).json({
                 success: false,
                 message: "Authentication required",
             });
         }
 
-        // All authenticated users can see online players
-        const onlineUsers = await UserService.getOnlineUsers();
+        // Get online users based on current user's role and hierarchy
+        const onlineUsers = await UserService.getOnlineUsers(currentUser);
         return res.status(200).json({
             success: true,
             data: onlineUsers,

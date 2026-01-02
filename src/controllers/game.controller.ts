@@ -114,8 +114,69 @@ const getGameStats = async (req: Request, res: Response) => {
     }
 }
 
+const getMachines = async (req: Request, res: Response) => {
+    try{
+        const userId = req.user?._id;
+        if(!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        // Get unique machines with their aggregated stats
+        const machines = await GameSession.aggregate([
+            {
+                $group: {
+                    _id: '$machine_id',
+                    machine_id: { $first: '$machine_id' },
+                    total_sessions: { $sum: 1 },
+                    victories: {
+                        $sum: { $cond: [{ $eq: ['$outcome', 'victory'] }, 1, 0] }
+                    },
+                    defeats: {
+                        $sum: { $cond: [{ $eq: ['$outcome', 'defeat'] }, 1, 0] }
+                    },
+                    abandoned: {
+                        $sum: { $cond: [{ $eq: ['$outcome', 'abandoned'] }, 1, 0] }
+                    },
+                    in_progress: {
+                        $sum: { $cond: [{ $eq: ['$outcome', 'in_progress'] }, 1, 0] }
+                    },
+                    incomplete: {
+                        $sum: { $cond: [{ $eq: ['$outcome', 'incomplete'] }, 1, 0] }
+                    },
+                    avg_final_score: { $avg: '$final_score' },
+                    max_final_score: { $max: '$final_score' },
+                    avg_max_ante: { $avg: '$max_ante_reached' },
+                    max_max_ante: { $max: '$max_ante_reached' },
+                    total_rounds: { $sum: '$rounds_completed' },
+                    avg_rounds: { $avg: '$rounds_completed' },
+                    last_session_date: { $max: '$end_time' }
+                }
+            },
+            {
+                $sort: { last_session_date: -1 }
+            }
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: machines,
+            totalCount: machines.length,
+        });
+    } catch(error) {
+        console.error(`Error in getMachines: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+}
+
 export {
     getGameSessions,
     getGameSessionById,
     getGameStats,
+    getMachines,
 };
