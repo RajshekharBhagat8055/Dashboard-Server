@@ -5,7 +5,12 @@ export interface MoneyTransaction {
   timestamp: string;
   amount: number;
   type: 'earned' | 'spent' | 'purchase' | 'sale';
-  description: string;
+  money_before: number;
+  reason: string;
+  details: {
+    item_name?: string;
+    item_type?: string;
+  };
 }
 
 // Card sold detailed interface
@@ -29,8 +34,53 @@ export interface ConsumableEffect {
 // Booster selection interface
 export interface BoosterSelection {
   booster_type: string;
-  cards_selected: any[];
+  cards_obtained: any[];
+  metadata: any;
+  selections_made: any;
   timestamp: string;
+}
+
+// Ante progression interface
+export interface AnteProgressionEntry {
+  ante: number;
+  blind_name: string;
+  blind_type: string;
+  round: number;
+  timestamp: string;
+}
+
+// Card action interface (for actions within rounds)
+export interface CardAction {
+  action: 'played' | 'discarded';
+  card_id: string;
+  hand_name: string;
+  position: number;
+  score_contribution: number;
+  timestamp: string;
+}
+
+// Round interface
+export interface Round {
+  ante: number;
+  blind_name: string;
+  blind_type: string;
+  round_number: number;
+  start_time: string;
+  end_time: string;
+  starting_money: number;
+  ending_money: number;
+  score_earned: number;
+  hands_played: number;
+  discards_used: number;
+  completed: boolean;
+  victory: boolean;
+  cards_played: CardAction[];
+  cards_discarded: CardAction[];
+  boosters_opened: any[];
+  purchases: any[];
+  sales: any[];
+  consumables_used: any[];
+  joker_abilities: any[];
 }
 
 // Main game session interface
@@ -52,7 +102,7 @@ export interface IGameSession extends Document {
   money_transactions: MoneyTransaction[]; // Detailed log of all money changes with timestamps
 
   // Round-by-round data (comprehensive tracking)
-  rounds: any[];
+  rounds: Round[];
   rounds_completed: number;
 
   // Purchases and sales
@@ -60,17 +110,17 @@ export interface IGameSession extends Document {
   sales: any[];
 
   // Hand progression
-  hand_levels: Map<string, number>;
+  hand_levels: Record<string, number>;
   max_hand_level: number;
 
   // Joker data
-  joker_levels: Map<string, number>;
+  joker_levels: Record<string, number>;
   joker_abilities_used: any[];
   joker_purchased: any[];
   joker_sold: any[];
 
   // Ante/blind progression
-  ante_progression: any[];
+  ante_progression: AnteProgressionEntry[];
   max_ante_reached: number;
 
   // Scoring
@@ -94,7 +144,7 @@ export interface IGameSession extends Document {
 
   // Run metadata
   run_number: number;
-  outcome: 'incomplete' | 'in_progress' | 'victory' | 'defeat';
+  outcome: 'incomplete' | 'in_progress' | 'victory' | 'defeat' | 'abandoned';
 
   // Play statistics
   total_hands_played: number;
@@ -216,8 +266,7 @@ const GameSessionSchema = new Schema<IGameSession>({
 
   // Hand progression
   hand_levels: {
-    type: Map,
-    of: Number,
+    type: Object,
     default: {}
   },
   max_hand_level: {
@@ -227,8 +276,7 @@ const GameSessionSchema = new Schema<IGameSession>({
 
   // Joker data
   joker_levels: {
-    type: Map,
-    of: Number,
+    type: Object,
     default: {}
   },
   joker_abilities_used: {
@@ -321,7 +369,7 @@ const GameSessionSchema = new Schema<IGameSession>({
   outcome: {
     type: String,
     default: "incomplete",
-    enum: ["incomplete", "in_progress", "victory", "defeat"]
+    enum: ["incomplete", "in_progress", "victory", "defeat", "abandoned"]
   },
 
   // Play statistics

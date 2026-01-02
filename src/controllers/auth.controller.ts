@@ -91,6 +91,7 @@ const login = async (req: Request, res: Response) => {
         user: {
           _id: user._id,
           username: user.username,
+          email: user.email,
           role: user.role,
           uniqueId: user.uniqueId,
           creditBalance: user.creditBalance,
@@ -187,6 +188,7 @@ const refreshToken = async (req: Request, res: Response) => {
     const tokenPayload = {
       userId: user._id.toString(),
       username: user.username,
+      email: user.email,
       role: user.role,
       uniqueId: user.uniqueId
     };
@@ -261,9 +263,9 @@ const getProfile = async (req: Request, res: Response) => {
         user: {
           _id: user._id,
           username: user.username,
+          email: user.email,
           role: user.role,
           uniqueId: user.uniqueId,
-          email: user.email,
           creditBalance: user.creditBalance,
           playPoints: user.playPoints,
           winPoints: user.winPoints,
@@ -297,7 +299,7 @@ const getProfile = async (req: Request, res: Response) => {
 const changePassword = async (req: Request, res: Response) => {
   try {
     const userId = req.user?._id;
-    const { currentPassword, newPassword } = req.body;
+    const { oldPassword, newPassword, confirmPassword } = req.body;
 
     if (!userId) {
       return res.status(401).json({
@@ -306,10 +308,17 @@ const changePassword = async (req: Request, res: Response) => {
       });
     }
 
-    if (!currentPassword || !newPassword) {
+    if (!oldPassword || !newPassword || !confirmPassword) {
       return res.status(400).json({
         success: false,
-        message: "Current password and new password are required"
+        message: "All password fields are required"
+      });
+    }
+
+    if (newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "New passwords don't match"
       });
     }
 
@@ -329,10 +338,10 @@ const changePassword = async (req: Request, res: Response) => {
       });
     }
 
-    // Verify current password
-    const isCurrentPasswordValid = await user.comparePassword(currentPassword);
+    // Verify old password
+    const isOldPasswordValid = await user.comparePassword(oldPassword);
 
-    if (!isCurrentPasswordValid) {
+    if (!isOldPasswordValid) {
       return res.status(400).json({
         success: false,
         message: "Current password is incorrect"
@@ -418,6 +427,7 @@ const createUser = async (req: Request, res: Response) => {
         user: {
           _id: newUser._id,
           username: newUser.username,
+          email: newUser.email,
           role: newUser.role,
           uniqueId: newUser.uniqueId,
           isActive: newUser.isActive,

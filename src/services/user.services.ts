@@ -670,10 +670,11 @@ export class UserService {
             (error as any).status = 404;
             throw error;
         }
+        console.log(`Transfer attempt - User: ${currentUserDoc.username}, Current Balance: ${currentUserDoc.creditBalance}, Transfer Amount: ${amount}`);
 
         // Check if current user has enough credit
         if (currentUserDoc.creditBalance < amount) {
-            const error = new Error('Insufficient credit balance');
+            const error = new Error(`Insufficient credit balance. You have ${currentUserDoc.creditBalance} credits but trying to transfer ${amount} credits.`);
             (error as any).status = 400;
             throw error;
         }

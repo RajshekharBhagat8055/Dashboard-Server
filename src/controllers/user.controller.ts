@@ -516,8 +516,8 @@ const transferCredit = async (req: Request, res: Response) => {
         }
 
         const { id } = req.params;
-        const { amount } = req.body;
-
+        const { amount } = req.body;    
+        console.log(amount);
         if (!amount || typeof amount !== 'number') {
             return res.status(400).json({
                 success: false,
