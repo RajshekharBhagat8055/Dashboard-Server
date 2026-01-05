@@ -47,7 +47,7 @@ const corsOptions = {
     allowedOrigins.push(
       'https://arka-dashboard-hub.vercel.app', // Your Vercel frontend
       /^https:\/\/arka-dashboard-hub.*\.vercel\.app$/, // Vercel preview deployments
-      'https://dashboard-server-dr9z.onrender.com' // Your Render backend (for API calls)
+      'https://dashboard-server-s25r.onrender.com' // Your current Render backend URL
     );
 
     // Check if the origin matches any allowed pattern
