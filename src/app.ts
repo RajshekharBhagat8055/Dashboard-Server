@@ -20,41 +20,57 @@ connectDB();
 
 // Security middleware
 app.use(helmet());
-app.use(cors({
-  origin: function (origin, callback) {
+// CORS configuration - environment aware
+const corsOptions = {
+  origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
 
-    const allowedOrigins = [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://127.0.0.1:5173',
-      'http://127.0.0.1:5174',
-      // Allow all 192.168.x.x addresses on ports 5173 and 5174
-      /^http:\/\/192\.168\.\d+\.\d+:517[34]$/,
-      // Allow localhost variations
-      /^http:\/\/localhost:517[34]$/,
-      /^http:\/\/127\.0\.0\.1:517[34]$/,
-    ];
+    const allowedOrigins = [];
+
+    // Development origins (when running locally)
+    if (process.env.NODE_ENV !== 'production') {
+      allowedOrigins.push(
+        'http://localhost:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5173',
+        'http://127.0.0.1:5174',
+        // Allow all 192.168.x.x addresses on ports 5173 and 5174
+        /^http:\/\/192\.168\.\d+\.\d+:517[34]$/,
+        // Allow localhost variations
+        /^http:\/\/localhost:517[34]$/,
+        /^http:\/\/127\.0\.0\.1:517[34]$/
+      );
+    }
+
+    // Production origins (always allowed)
+    allowedOrigins.push(
+      'https://arka-dashboard-hub.vercel.app', // Your Vercel frontend
+      /^https:\/\/arka-dashboard-hub.*\.vercel\.app$/, // Vercel preview deployments
+      'https://dashboard-server-dr9z.onrender.com' // Your Render backend (for API calls)
+    );
 
     // Check if the origin matches any allowed pattern
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (typeof allowedOrigin === 'string') {
         return allowedOrigin === origin;
-      } else {
+      } else if (allowedOrigin instanceof RegExp) {
         return allowedOrigin.test(origin);
       }
+      return false;
     });
 
     if (isAllowed) {
       callback(null, true);
     } else {
-      console.log('CORS blocked origin:', origin);
+      console.log('CORS blocked origin:', origin, 'NODE_ENV:', process.env.NODE_ENV);
       callback(new Error('Not allowed by CORS'));
     }
   },
   credentials: true
-}));
+};
+
+app.use(cors(corsOptions));
 
 // Cookie parsing middleware
 app.use(cookieParser());
