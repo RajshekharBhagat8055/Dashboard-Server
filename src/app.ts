@@ -64,7 +64,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Routes
-app.get('/', (req, res) => {
+app.get('/', (req: Request, res: Response) => {
   res.json({
     message: 'Balatro Admin Backend Server is running!',
     version: '1.0.0',
@@ -79,7 +79,7 @@ app.use('/api/games', gameRouter);
 app.use('/api/logs', logRouter);
 
 // 404 handler
-app.use('*', (req, res) => {
+app.use('*', (req: Request, res: Response) => {
   res.status(404).json({
     success: false,
     message: 'Route not found'
