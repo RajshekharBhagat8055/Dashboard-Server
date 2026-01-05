@@ -173,8 +173,6 @@ export class UserService {
     }
 
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         // Get distributors under super distributor
         const distributors = await User.find({
             createdBy: superDistributorId,
