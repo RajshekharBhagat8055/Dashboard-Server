@@ -71,15 +71,15 @@ const login = async (req: Request, res: Response) => {
     // Set HttpOnly cookies for secure token storage
     res.cookie('accessToken', tokens.accessToken, {
       httpOnly: true,        // Prevents JavaScript access (XSS protection)
-      secure: process.env.NODE_ENV === 'production', // HTTPS only in production
-      sameSite: 'strict',    // CSRF protection
+      secure: true,          // Always HTTPS for cross-domain cookies
+      sameSite: 'none',      // Allow cross-domain requests (Vercel to Render)
       maxAge: 15 * 60 * 1000 // 15 minutes (access token expiry)
     });
 
     res.cookie('refreshToken', tokens.refreshToken, {
       httpOnly: true,        // Prevents JavaScript access
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true,          // Always HTTPS for cross-domain cookies
+      sameSite: 'none',      // Allow cross-domain requests (Vercel to Render)
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (refresh token expiry)
     });
 
@@ -117,14 +117,14 @@ const logout = async (req: Request, res: Response) => {
     // Clear HttpOnly cookies containing tokens
     res.clearCookie('accessToken', {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
+      secure: true,
+      sameSite: 'none'
     });
 
     res.clearCookie('refreshToken', {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict'
+      secure: true,
+      sameSite: 'none'
     });
 
     // Get user from request (set by auth middleware)
@@ -198,8 +198,8 @@ const refreshToken = async (req: Request, res: Response) => {
     // Set new access token cookie
     res.cookie('accessToken', newAccessToken, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
+      secure: true,
+      sameSite: 'none',
       maxAge: 15 * 60 * 1000 // 15 minutes
     });
 
