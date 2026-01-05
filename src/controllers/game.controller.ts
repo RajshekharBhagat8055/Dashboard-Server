@@ -152,7 +152,10 @@ const getMachines = async (req: Request, res: Response) => {
                     max_max_ante: { $max: '$max_ante_reached' },
                     total_rounds: { $sum: '$rounds_completed' },
                     avg_rounds: { $avg: '$rounds_completed' },
-                    last_session_date: { $max: '$end_time' }
+                    last_session_date: { $max: '$end_time' },
+                    total_initial_credit: { $sum: '$initial_credit' },
+                    total_payout_amount: { $sum: '$payout_amount' },
+                    total_arcade_profit: { $sum: '$arcade_profit' }
                 }
             },
             {

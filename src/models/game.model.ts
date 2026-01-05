@@ -101,6 +101,11 @@ export interface IGameSession extends Document {
   money_earned: number;
   money_transactions: MoneyTransaction[]; // Detailed log of all money changes with timestamps
 
+  // Arcade business tracking
+  initial_credit: number;        // Amount user paid to start playing ($)
+  payout_amount: number;         // Amount returned to user at checkout ($)
+  arcade_profit: number;         // initial_credit - payout_amount
+
   // Round-by-round data (comprehensive tracking)
   rounds: Round[];
   rounds_completed: number;
@@ -242,6 +247,20 @@ const GameSessionSchema = new Schema<IGameSession>({
   money_transactions: {
     type: [Object],
     default: []  // Detailed log of all money changes with timestamps
+  },
+
+  // Arcade business tracking
+  initial_credit: {
+    type: Number,
+    default: 0  // Amount user paid to start playing ($)
+  },
+  payout_amount: {
+    type: Number,
+    default: 0  // Amount returned to user at checkout ($)
+  },
+  arcade_profit: {
+    type: Number,
+    default: 0  // initial_credit - payout_amount
   },
 
   // Round-by-round data (comprehensive tracking)

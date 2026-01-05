@@ -69,19 +69,31 @@ const login = async (req: Request, res: Response) => {
     const tokens = generateTokenPair(tokenPayload);
 
     // Set HttpOnly cookies for secure token storage
-    res.cookie('accessToken', tokens.accessToken, {
-      httpOnly: true,        // Prevents JavaScript access (XSS protection)
-      secure: true,          // Always HTTPS for cross-domain cookies
-      sameSite: 'none',      // Allow cross-domain requests (Vercel to Render)
-      maxAge: 15 * 60 * 1000 // 15 minutes (access token expiry)
-    });
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isNetworkAccess = req.hostname.startsWith('192.168.');
 
-    res.cookie('refreshToken', tokens.refreshToken, {
-      httpOnly: true,        // Prevents JavaScript access
-      secure: true,          // Always HTTPS for cross-domain cookies
-      sameSite: 'none',      // Allow cross-domain requests (Vercel to Render)
+    // Configure cookie options based on environment
+    const baseCookieOptions: any = {
+      httpOnly: true,        // Prevents JavaScript access (XSS protection)
+      secure: isProduction,  // HTTPS only in production
+      sameSite: isProduction ? 'none' : 'lax', // 'none' for cross-domain, 'lax' for localhost
+      maxAge: 15 * 60 * 1000 // 15 minutes (access token expiry)
+    };
+
+    // For network access (192.168.x.x), set domain to share cookies across ports
+    if (isNetworkAccess) {
+      baseCookieOptions.domain = req.hostname; // e.g., '192.168.1.100'
+    }
+
+    res.cookie('accessToken', tokens.accessToken, baseCookieOptions);
+
+    // Refresh token with longer expiry
+    const refreshCookieOptions = {
+      ...baseCookieOptions,
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (refresh token expiry)
-    });
+    };
+
+    res.cookie('refreshToken', tokens.refreshToken, refreshCookieOptions);
 
     // Return success response WITHOUT tokens (they're in cookies now)
     return res.status(200).json({
@@ -115,17 +127,22 @@ const login = async (req: Request, res: Response) => {
 const logout = async (req: Request, res: Response) => {
   try {
     // Clear HttpOnly cookies containing tokens
-    res.clearCookie('accessToken', {
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none'
-    });
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isNetworkAccess = req.hostname.startsWith('192.168.');
 
-    res.clearCookie('refreshToken', {
+    const clearCookieOptions: any = {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none'
-    });
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax'
+    };
+
+    // For network access, include domain
+    if (isNetworkAccess) {
+      clearCookieOptions.domain = req.hostname;
+    }
+
+    res.clearCookie('accessToken', clearCookieOptions);
+    res.clearCookie('refreshToken', clearCookieOptions);
 
     // Get user from request (set by auth middleware)
     const userId = req.user?._id;
@@ -196,12 +213,22 @@ const refreshToken = async (req: Request, res: Response) => {
     const newAccessToken = generateAccessToken(tokenPayload);
 
     // Set new access token cookie
-    res.cookie('accessToken', newAccessToken, {
+    const isProduction = process.env.NODE_ENV === 'production';
+    const isNetworkAccess = req.hostname.startsWith('192.168.');
+
+    const refreshCookieOptions: any = {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none',
+      secure: isProduction,
+      sameSite: isProduction ? 'none' : 'lax',
       maxAge: 15 * 60 * 1000 // 15 minutes
-    });
+    };
+
+    // For network access, include domain
+    if (isNetworkAccess) {
+      refreshCookieOptions.domain = req.hostname;
+    }
+
+    res.cookie('accessToken', newAccessToken, refreshCookieOptions);
 
     return res.status(200).json({
       success: true,
