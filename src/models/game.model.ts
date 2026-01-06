@@ -1,159 +1,87 @@
 import mongoose, { Document, Schema, Model } from "mongoose";
 
-// Money transaction interface
-export interface MoneyTransaction {
+// Item interfaces for purchases and sales
+export interface PurchasedItem {
+  name: string;
+  cost: number;
   timestamp: string;
-  amount: number;
-  type: 'earned' | 'spent' | 'purchase' | 'sale';
-  money_before: number;
-  reason: string;
-  details: {
-    item_name?: string;
-    item_type?: string;
-  };
+  rarity?: string | number; // Accept both String ("Common") or Number (1)
+  edition?: string;
+  type?: string;
 }
 
-// Card sold detailed interface
-export interface CardSoldDetailed {
-  card_name: string;
-  enhancement?: string;
-  edition?: string;
+export interface SoldItem {
+  name: string;
   sale_price: number;
   timestamp: string;
+  rarity?: string | number; // Accept both String ("Common") or Number (1)
+  edition?: string;
+  type?: string;
+  rank?: string;
+  suit?: string;
+  enhancement?: string;
 }
 
-// Consumable effect interface
-export interface ConsumableEffect {
-  consumable_type: 'tarot' | 'planet' | 'spectral';
-  consumable_name: string;
-  effect_type: 'joker_added' | 'card_enhanced' | 'card_added' | 'buff_applied';
-  effect_details: any;
-  timestamp: string;
-}
-
-// Booster selection interface
-export interface BoosterSelection {
-  booster_type: string;
-  cards_obtained: any[];
-  metadata: any;
-  selections_made: any;
-  timestamp: string;
-}
-
-// Ante progression interface
-export interface AnteProgressionEntry {
-  ante: number;
-  blind_name: string;
-  blind_type: string;
-  round: number;
-  timestamp: string;
-}
-
-// Card action interface (for actions within rounds)
-export interface CardAction {
-  action: 'played' | 'discarded';
-  card_id: string;
-  hand_name: string;
-  position: number;
-  score_contribution: number;
-  timestamp: string;
-}
-
-// Round interface
-export interface Round {
-  ante: number;
-  blind_name: string;
-  blind_type: string;
-  round_number: number;
-  start_time: string;
-  end_time: string;
-  starting_money: number;
-  ending_money: number;
-  score_earned: number;
-  hands_played: number;
-  discards_used: number;
-  completed: boolean;
-  victory: boolean;
-  cards_played: CardAction[];
-  cards_discarded: CardAction[];
-  boosters_opened: any[];
-  purchases: any[];
-  sales: any[];
-  consumables_used: any[];
-  joker_abilities: any[];
+// Money transactions breakdown interface
+export interface MoneyTransactionsBreakdown {
+  spent_on: {
+    joker: number;
+    consumable: number;
+    booster: number;
+    voucher: number;
+    reroll: number;
+  };
+  earned_from: {
+    joker: number;
+    consumable: number;
+    card: number;
+    round_victory: number;
+  };
+  items_purchased: {
+    jokers: PurchasedItem[];
+    consumables: PurchasedItem[];
+    boosters: PurchasedItem[];
+    vouchers: PurchasedItem[];
+  };
+  items_sold: {
+    jokers: SoldItem[];
+    consumables: SoldItem[];
+    cards: SoldItem[];
+  };
 }
 
 // Main game session interface
 export interface IGameSession extends Document {
-  // Core session identification
+  // Session identification
   session_id: number;
   machine_id: string;
+  run_number: number;
 
-  // Session timing (human-readable format: "2024-12-25 14:30:56")
+  // Timing (human-readable format: "2024-12-25 14:30:56")
   start_time: string;
   end_time: string;
-  time_spent_readable: string; // e.g., "7m 13s", "1h 23m 45s"
+  time_spent_readable: string; // e.g., "7m 13s"
 
   // Money tracking
   starting_money: number;
   current_money: number;
   money_spent: number;
   money_earned: number;
-  money_transactions: MoneyTransaction[]; // Detailed log of all money changes with timestamps
+  money_claimed: number; // Amount actually claimed via cashout (0 until claimed)
+  session_net_profit: number; // Machine profit: starting_money - money_claimed
+  money_transactions_breakdown: MoneyTransactionsBreakdown;
 
-  // Arcade business tracking
-  initial_credit: number;        // Amount user paid to start playing ($)
-  payout_amount: number;         // Amount returned to user at checkout ($)
-  arcade_profit: number;         // initial_credit - payout_amount
-
-  // Round-by-round data (comprehensive tracking)
-  rounds: Round[];
+  // Round-by-round data
+  rounds: any[]; // Simplified to just array
   rounds_completed: number;
 
-  // Purchases and sales
-  purchases: any[];
-  sales: any[];
-
-  // Hand progression
-  hand_levels: Record<string, number>;
-  max_hand_level: number;
-
-  // Joker data
-  joker_levels: Record<string, number>;
-  joker_abilities_used: any[];
-  joker_purchased: any[];
-  joker_sold: any[];
-
-  // Ante/blind progression
-  ante_progression: AnteProgressionEntry[];
+  // Performance metrics
   max_ante_reached: number;
-
-  // Scoring
-  max_score: number;
   final_score: number;
-  average_score_per_round: number;
-
-  // Card actions
-  cards_played: any[];
-  cards_discarded: any[];
-  cards_purchased: any[];
-  cards_sold: any[];
-  cards_sold_detailed: CardSoldDetailed[]; // Detailed info about sold cards
-
-  // Consumables
-  tarots_used: any[];
-  planets_used: any[];
-  consumable_effects: ConsumableEffect[]; // Detailed effects from consumables
-  boosters_opened: any[];
-  booster_selections: BoosterSelection[]; // Detailed selections from booster packs
-
-  // Run metadata
-  run_number: number;
-  outcome: 'incomplete' | 'in_progress' | 'victory' | 'defeat' | 'abandoned';
-
-  // Play statistics
   total_hands_played: number;
-  total_discards_used: number;
+
+  // Session outcome
+  outcome: 'incomplete' | 'win' | 'loss' | 'cash_out' | 'abandoned';
 
   // Sync metadata
   synced_at: Date;
@@ -166,7 +94,7 @@ export interface IGameSession extends Document {
   updatedAt: Date;
 
   // Virtual
-  duration_minutes: number;
+  duration_display: string;
 
   // Methods
   getSummary(): GameSessionSummary;
@@ -186,7 +114,8 @@ export interface GameSessionSummary {
   final_score: number;
   max_ante: number;
   rounds: number;
-  duration_minutes: string;
+  duration: string;
+  machine_profit: number;
 }
 
 // Stats interface for getStats static method
@@ -198,8 +127,8 @@ export interface GameStats {
   avg_ante: number;
 }
 
-const GameSessionSchema = new Schema<IGameSession>({
-  // Core session identification
+const GameSessionSchema = new mongoose.Schema<IGameSession>({
+  // Session identification
   session_id: {
     type: Number,
     required: true,
@@ -212,8 +141,13 @@ const GameSessionSchema = new Schema<IGameSession>({
     default: "arcade_001",
     index: true
   },
+  run_number: {
+    type: Number,
+    default: 0,
+    index: true
+  },
 
-  // Session timing (human-readable format: "2024-12-25 14:30:56")
+  // Timing (human-readable format: "2024-12-25 14:30:56")
   start_time: {
     type: String,
     required: true
@@ -224,7 +158,7 @@ const GameSessionSchema = new Schema<IGameSession>({
   },
   time_spent_readable: {
     type: String,
-    default: ""  // e.g., "7m 13s", "1h 23m 45s"
+    default: ""  // e.g., "7m 13s"
   },
 
   // Money tracking
@@ -244,161 +178,107 @@ const GameSessionSchema = new Schema<IGameSession>({
     type: Number,
     default: 0
   },
-  money_transactions: {
-    type: [Object],
-    default: []  // Detailed log of all money changes with timestamps
+  money_claimed: {
+    type: Number,
+    default: 0  // Amount actually claimed via cashout (0 until claimed)
+  },
+  session_net_profit: {
+    type: Number,
+    default: 0  // Machine profit: starting_money - money_claimed
+  },
+  money_transactions_breakdown: {
+    spent_on: {
+      joker: { type: Number, default: 0 },
+      consumable: { type: Number, default: 0 },
+      booster: { type: Number, default: 0 },
+      voucher: { type: Number, default: 0 },
+      reroll: { type: Number, default: 0 }
+    },
+    earned_from: {
+      joker: { type: Number, default: 0 },
+      consumable: { type: Number, default: 0 },
+      card: { type: Number, default: 0 },
+      round_victory: { type: Number, default: 0 }
+    },
+    items_purchased: {
+      jokers: [{
+        name: String,
+        cost: Number,
+        rarity: mongoose.Schema.Types.Mixed,  // Accept both String ("Common") or Number (1)
+        edition: String,
+        timestamp: String
+      }],
+      consumables: [{
+        name: String,
+        cost: Number,
+        type: String,
+        timestamp: String
+      }],
+      boosters: [{
+        name: String,
+        cost: Number,
+        timestamp: String
+      }],
+      vouchers: [{
+        name: String,
+        cost: Number,
+        timestamp: String
+      }]
+    },
+    items_sold: {
+      jokers: [{
+        name: String,
+        sale_price: Number,
+        rarity: mongoose.Schema.Types.Mixed,  // Accept both String ("Common") or Number (1)
+        edition: String,
+        timestamp: String
+      }],
+      consumables: [{
+        name: String,
+        sale_price: Number,
+        type: String,
+        timestamp: String
+      }],
+      cards: [{
+        rank: String,
+        suit: String,
+        sale_price: Number,
+        enhancement: String,
+        edition: String,
+        timestamp: String
+      }]
+    }
   },
 
-  // Arcade business tracking
-  initial_credit: {
-    type: Number,
-    default: 0  // Amount user paid to start playing ($)
-  },
-  payout_amount: {
-    type: Number,
-    default: 0  // Amount returned to user at checkout ($)
-  },
-  arcade_profit: {
-    type: Number,
-    default: 0  // initial_credit - payout_amount
-  },
-
-  // Round-by-round data (comprehensive tracking)
-  rounds: {
-    type: [Object],
-    default: []
-  },
+  // Round-by-round data
+  rounds: [{
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
+  }],
   rounds_completed: {
     type: Number,
     default: 0
   },
 
-  // Purchases and sales
-  purchases: {
-    type: [Object],
-    default: []
-  },
-  sales: {
-    type: [Object],
-    default: []
-  },
-
-  // Hand progression
-  hand_levels: {
-    type: Object,
-    default: {}
-  },
-  max_hand_level: {
-    type: Number,
-    default: 0
-  },
-
-  // Joker data
-  joker_levels: {
-    type: Object,
-    default: {}
-  },
-  joker_abilities_used: {
-    type: [Object],
-    default: []
-  },
-  joker_purchased: {
-    type: [Object],
-    default: []
-  },
-  joker_sold: {
-    type: [Object],
-    default: []
-  },
-
-  // Ante/blind progression
-  ante_progression: {
-    type: [Object],
-    default: []
-  },
+  // Performance metrics
   max_ante_reached: {
     type: Number,
     default: 1
-  },
-
-  // Scoring
-  max_score: {
-    type: Number,
-    default: 0
   },
   final_score: {
     type: Number,
     default: 0
   },
-  average_score_per_round: {
-    type: Number,
-    default: 0
-  },
-
-  // Card actions
-  cards_played: {
-    type: [Object],
-    default: []
-  },
-  cards_discarded: {
-    type: [Object],
-    default: []
-  },
-  cards_purchased: {
-    type: [Object],
-    default: []
-  },
-  cards_sold: {
-    type: [Object],
-    default: []
-  },
-  cards_sold_detailed: {
-    type: [Object],
-    default: []  // Detailed info about sold cards (enhancement, edition, sale price, etc.)
-  },
-
-  // Consumables
-  tarots_used: {
-    type: [Object],
-    default: []
-  },
-  planets_used: {
-    type: [Object],
-    default: []
-  },
-  consumable_effects: {
-    type: [Object],
-    default: []  // Detailed effects from consumables (added jokers, cards, buffs)
-  },
-  boosters_opened: {
-    type: [Object],
-    default: []
-  },
-  booster_selections: {
-    type: [Object],
-    default: []  // Detailed selections from booster packs
-  },
-
-  // Run metadata
-  run_number: {
-    type: Number,
-    default: 0,
-    index: true
-  },
-  outcome: {
-    type: String,
-    default: "incomplete",
-    enum: ["incomplete", "in_progress", "victory", "defeat", "abandoned"]
-  },
-
-  // Play statistics
   total_hands_played: {
     type: Number,
     default: 0
   },
-  total_discards_used: {
-    type: Number,
-    default: 0
+
+  // Session outcome
+  outcome: {
+    type: String,
+    default: "incomplete",
+    enum: ["incomplete", "win", "loss", "cash_out", "abandoned"]
   },
 
   // Sync metadata
@@ -417,33 +297,15 @@ const GameSessionSchema = new Schema<IGameSession>({
   collection: 'game_sessions'
 });
 
+// Indexes for efficient queries
+GameSessionSchema.index({ machine_id: 1, start_time: -1 });
+GameSessionSchema.index({ outcome: 1 });
+GameSessionSchema.index({ synced_at: -1 });
+
 // Virtual for session duration (computed field)
-GameSessionSchema.virtual('duration_minutes').get(function(this: IGameSession): number {
-  if (this.time_spent_readable) {
-    // Parse readable time format like "7m 13s" or "1h 23m 45s"
-    const timeMatch = this.time_spent_readable.match(/(\d+)h\s*(\d+)m\s*(\d+)s|(\d+)m\s*(\d+)s|(\d+)s/);
-    if (timeMatch) {
-      let hours = 0, minutes = 0, seconds = 0;
-
-      if (timeMatch[1] && timeMatch[2] && timeMatch[3]) {
-        // Format: "1h 23m 45s"
-        hours = parseInt(timeMatch[1]);
-        minutes = parseInt(timeMatch[2]);
-        seconds = parseInt(timeMatch[3]);
-      } else if (timeMatch[4] && timeMatch[5]) {
-        // Format: "7m 13s"
-        minutes = parseInt(timeMatch[4]);
-        seconds = parseInt(timeMatch[5]);
-      } else if (timeMatch[6]) {
-        // Format: "45s"
-        seconds = parseInt(timeMatch[6]);
-      }
-
-      const totalMinutes = hours * 60 + minutes + seconds / 60;
-      return Number(totalMinutes.toFixed(2));
-    }
-  }
-  return 0;
+// Note: time_spent_readable is a string like "7m 13s", not seconds
+GameSessionSchema.virtual('duration_display').get(function(this: IGameSession): string {
+  return this.time_spent_readable || "0m 0s";
 });
 
 // Method to get session summary
@@ -456,7 +318,8 @@ GameSessionSchema.methods.getSummary = function(this: IGameSession): GameSession
     final_score: this.final_score,
     max_ante: this.max_ante_reached,
     rounds: this.rounds_completed,
-    duration_minutes: (this as any).duration_minutes?.toString() || '0'
+    duration: this.time_spent_readable,
+    machine_profit: this.session_net_profit
   };
 };
 
