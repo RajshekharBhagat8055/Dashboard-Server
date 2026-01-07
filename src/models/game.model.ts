@@ -64,14 +64,18 @@ export interface IGameSession extends Document {
   money_deposited: number; // Total money deposited by player (machine receives)
   starting_money: number; // Initial in-game credits (same as money_deposited in pay-to-play)
   current_money: number;
+  current_balance: number; // Alias with clearer meaning; mirror of current_money for backward compatibility
   money_spent: number;
   money_earned: number;
   money_claimed: number; // Amount actually claimed via cashout (machine pays out)
   session_net_profit: number; // Machine profit: money_deposited - money_claimed
   money_transactions_breakdown: MoneyTransactionsBreakdown;
 
-  // Round-by-round data
-  rounds: any[]; // Simplified to just array
+  // Round-by-round data (current/last run)
+  rounds: any[];
+  // Multi-run tracking
+  runs: any[]; // Array of per-run summaries
+  total_runs: number;
   rounds_completed: number;
 
   // Performance metrics
@@ -173,6 +177,11 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
     type: Number,
     default: 0
   },
+  // Alias with clearer meaning; mirror of current_money for backward compatibility
+  current_balance: {
+    type: Number,
+    default: 0
+  },
   money_spent: {
     type: Number,
     default: 0
@@ -244,11 +253,18 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
     }
   },
 
-  // Round-by-round data
+  // Round-by-round data (current/last run)
   rounds: [{
-    type: mongoose.Schema.Types.Mixed,
-    default: {}
-  }],
+    type: mongoose.Schema.Types.Mixed
+  }] as any,
+  // Multi-run tracking
+  runs: [{
+    type: mongoose.Schema.Types.Mixed
+  }] as any,
+  total_runs: {
+    type: Number,
+    default: 0
+  },
   rounds_completed: {
     type: Number,
     default: 0
