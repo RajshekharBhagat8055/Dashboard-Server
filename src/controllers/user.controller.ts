@@ -455,7 +455,9 @@ const updateUser = async (req: Request, res: Response) => {
             });
         }
 
+        console.log(`updateUser controller: Calling UserService.updateUser for user ${id}`);
         const updatedUser = await UserService.updateUser(id, updates, currentUser);
+        console.log(`updateUser controller: UserService.updateUser completed successfully`);
         return res.status(200).json({
             success: true,
             data: updatedUser,

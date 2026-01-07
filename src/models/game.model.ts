@@ -7,7 +7,7 @@ export interface PurchasedItem {
   timestamp: string;
   rarity?: string | number; // Accept both String ("Common") or Number (1)
   edition?: string;
-  type?: string;
+  item_type?: string;
 }
 
 export interface SoldItem {
@@ -16,7 +16,7 @@ export interface SoldItem {
   timestamp: string;
   rarity?: string | number; // Accept both String ("Common") or Number (1)
   edition?: string;
-  type?: string;
+  item_type?: string;
   rank?: string;
   suit?: string;
   enhancement?: string;
@@ -34,8 +34,7 @@ export interface MoneyTransactionsBreakdown {
   earned_from: {
     joker: number;
     consumable: number;
-    card: number;
-    round_victory: number;
+    round_win: number;
   };
   items_purchased: {
     jokers: PurchasedItem[];
@@ -46,7 +45,6 @@ export interface MoneyTransactionsBreakdown {
   items_sold: {
     jokers: SoldItem[];
     consumables: SoldItem[];
-    cards: SoldItem[];
   };
 }
 
@@ -63,12 +61,13 @@ export interface IGameSession extends Document {
   time_spent_readable: string; // e.g., "7m 13s"
 
   // Money tracking
-  starting_money: number;
+  money_deposited: number; // Total money deposited by player (machine receives)
+  starting_money: number; // Initial in-game credits (same as money_deposited in pay-to-play)
   current_money: number;
   money_spent: number;
   money_earned: number;
-  money_claimed: number; // Amount actually claimed via cashout (0 until claimed)
-  session_net_profit: number; // Machine profit: starting_money - money_claimed
+  money_claimed: number; // Amount actually claimed via cashout (machine pays out)
+  session_net_profit: number; // Machine profit: money_deposited - money_claimed
   money_transactions_breakdown: MoneyTransactionsBreakdown;
 
   // Round-by-round data
@@ -81,7 +80,7 @@ export interface IGameSession extends Document {
   total_hands_played: number;
 
   // Session outcome
-  outcome: 'incomplete' | 'win' | 'loss' | 'cash_out' | 'abandoned';
+  outcome: 'incomplete' | 'win' | 'loss' | 'cash_out' | 'abandoned' | 'new_run';
 
   // Sync metadata
   synced_at: Date;
@@ -162,9 +161,13 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
   },
 
   // Money tracking
+  money_deposited: {
+    type: Number,
+    default: 0  // Total money deposited by player (machine receives)
+  },
   starting_money: {
     type: Number,
-    default: 0
+    default: 0  // Initial in-game credits (same as money_deposited in pay-to-play)
   },
   current_money: {
     type: Number,
@@ -180,11 +183,11 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
   },
   money_claimed: {
     type: Number,
-    default: 0  // Amount actually claimed via cashout (0 until claimed)
+    default: 0  // Amount actually claimed via cashout (machine pays out)
   },
   session_net_profit: {
     type: Number,
-    default: 0  // Machine profit: starting_money - money_claimed
+    default: 0  // Machine profit: money_deposited - money_claimed
   },
   money_transactions_breakdown: {
     spent_on: {
@@ -197,8 +200,7 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
     earned_from: {
       joker: { type: Number, default: 0 },
       consumable: { type: Number, default: 0 },
-      card: { type: Number, default: 0 },
-      round_victory: { type: Number, default: 0 }
+      round_win: { type: Number, default: 0 }
     },
     items_purchased: {
       jokers: [{
@@ -211,7 +213,7 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
       consumables: [{
         name: String,
         cost: Number,
-        type: String,
+        item_type: String,
         timestamp: String
       }],
       boosters: [{
@@ -236,15 +238,7 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
       consumables: [{
         name: String,
         sale_price: Number,
-        type: String,
-        timestamp: String
-      }],
-      cards: [{
-        rank: String,
-        suit: String,
-        sale_price: Number,
-        enhancement: String,
-        edition: String,
+        item_type: String,
         timestamp: String
       }]
     }
@@ -278,7 +272,7 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
   outcome: {
     type: String,
     default: "incomplete",
-    enum: ["incomplete", "win", "loss", "cash_out", "abandoned"]
+    enum: ["incomplete", "win", "loss", "cash_out", "abandoned", "new_run"]
   },
 
   // Sync metadata

@@ -196,6 +196,7 @@ const getMachines = async (req: Request, res: Response) => {
                     total_rounds: { $sum: '$rounds_completed' },
                     avg_rounds: { $avg: '$rounds_completed' },
                     last_session_date: { $max: '$end_time' },
+                    total_money_deposited: { $sum: '$money_deposited' },
                     total_starting_money: { $sum: '$starting_money' },
                     total_money_claimed: { $sum: '$money_claimed' },
                     total_session_net_profit: { $sum: '$session_net_profit' }

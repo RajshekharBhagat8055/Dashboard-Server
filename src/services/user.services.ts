@@ -313,17 +313,48 @@ export class UserService {
         const usersCount = directUsersCount + distributorUsersCount + retailerUsersCount;
 
         // Get total points from all hierarchy levels
+        // First, collect all user IDs in the hierarchy
+        const hierarchyUserIds = new Set();
+
+        // Add super distributor
+        hierarchyUserIds.add(superDistributorId);
+
+        // Add all distributors
+        distributorIds.forEach(id => hierarchyUserIds.add(id));
+
+        // Add all retailers
+        allRetailerIds.forEach(id => hierarchyUserIds.add(id));
+
+        // Add all users created by super distributor
+        const directUsers = await User.find({
+            createdBy: superDistributorId,
+            role: 'user'
+        }).select('_id').lean();
+        directUsers.forEach(user => hierarchyUserIds.add(user._id));
+
+        // Add all users created by distributors
+        if (distributorIds.length > 0) {
+            const distributorUsers = await User.find({
+                createdBy: { $in: distributorIds },
+                role: 'user'
+            }).select('_id').lean();
+            distributorUsers.forEach(user => hierarchyUserIds.add(user._id));
+        }
+
+        // Add all users created by retailers
+        if (allRetailerIds.length > 0) {
+            const retailerUsers = await User.find({
+                createdBy: { $in: allRetailerIds },
+                role: 'user'
+            }).select('_id').lean();
+            retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
+        }
+
+        // Now sum all credit balances
         const totalPointsResult = await User.aggregate([
             {
                 $match: {
-                    $or: [
-                        { createdBy: superDistributorId, role: 'distributor' },
-                        { createdBy: superDistributorId, role: 'retailer' },     // Direct retailers
-                        { createdBy: { $in: distributorIds }, role: 'retailer' }, // Via distributors
-                        { createdBy: superDistributorId, role: 'user' },         // Direct users
-                        { createdBy: { $in: distributorIds }, role: 'user' },    // Users created by distributors
-                        { createdBy: { $in: allRetailerIds }, role: 'user' }     // Via retailers
-                    ]
+                    _id: { $in: Array.from(hierarchyUserIds) }
                 }
             },
             {
@@ -429,15 +460,37 @@ export class UserService {
 
         const usersCount = directUsersCount + retailerUsersCount;
 
-        // Get total points
+        // Get total points from all hierarchy levels
+        // First, collect all user IDs in the hierarchy
+        const hierarchyUserIds = new Set();
+
+        // Add distributor
+        hierarchyUserIds.add(distributorId);
+
+        // Add all retailers
+        retailerIds.forEach(id => hierarchyUserIds.add(id));
+
+        // Add all users created by distributor
+        const directUsers = await User.find({
+            createdBy: distributorId,
+            role: 'user'
+        }).select('_id').lean();
+        directUsers.forEach(user => hierarchyUserIds.add(user._id));
+
+        // Add all users created by retailers
+        if (retailerIds.length > 0) {
+            const retailerUsers = await User.find({
+                createdBy: { $in: retailerIds },
+                role: 'user'
+            }).select('_id').lean();
+            retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
+        }
+
+        // Now sum all credit balances
         const totalPointsResult = await User.aggregate([
             {
                 $match: {
-                    $or: [
-                        { createdBy: distributorId, role: 'retailer' },
-                        { createdBy: distributorId, role: 'user' }, // Direct users
-                        { createdBy: { $in: retailerIds }, role: 'user' }
-                    ]
+                    _id: { $in: Array.from(hierarchyUserIds) }
                 }
             },
             {
@@ -482,12 +535,25 @@ export class UserService {
             role: 'user'
         });
 
-        // Get total points
+        // Get total points from all hierarchy levels
+        // First, collect all user IDs in the hierarchy
+        const hierarchyUserIds = new Set();
+
+        // Add retailer
+        hierarchyUserIds.add(retailerId);
+
+        // Add all users created by retailer
+        const retailerUsers = await User.find({
+            createdBy: retailerId,
+            role: 'user'
+        }).select('_id').lean();
+        retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
+
+        // Now sum all credit balances
         const totalPointsResult = await User.aggregate([
             {
                 $match: {
-                    createdBy: retailerId,
-                    role: 'user'
+                    _id: { $in: Array.from(hierarchyUserIds) }
                 }
             },
             {
@@ -569,10 +635,22 @@ export class UserService {
         }
 
         // Check if current user can view this user
-        if (currentUser.role !== 'admin' && targetUser.parentId?.toString() !== currentUser._id) {
-            const error = new Error('Access denied');
-            (error as any).status = 403;
-            throw error;
+        if (currentUser.role !== 'admin') {
+            let hasAccess = false;
+
+            if (currentUser.role === 'super_distributor') {
+                hasAccess = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            } else if (currentUser.role === 'distributor') {
+                hasAccess = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            } else if (currentUser.role === 'retailer') {
+                hasAccess = targetUser.createdBy?.toString() === currentUser._id;
+            }
+
+            if (!hasAccess) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         }
 
         // Return user data with fields needed for editing
@@ -598,46 +676,167 @@ export class UserService {
 
     // ============ MUTATION METHODS ============
 
+    static async isUserInDistributorHierarchy(targetUserId: string, distributorId: string): Promise<boolean> {
+        // Check if the target user is in the distributor's hierarchy
+        const targetUser = await User.findById(targetUserId);
+        if (!targetUser) {
+            console.log(`isUserInDistributorHierarchy: Target user ${targetUserId} not found`);
+            return false;
+        }
+
+        console.log(`isUserInDistributorHierarchy: Checking if user ${targetUserId} (createdBy: ${targetUser.createdBy}, role: ${targetUser.role}) is in distributor ${distributorId}'s hierarchy`);
+
+        // If target user is directly created by distributor
+        if (targetUser.createdBy?.toString() === distributorId) {
+            console.log(`isUserInDistributorHierarchy: User ${targetUserId} is directly created by distributor ${distributorId}`);
+            return true;
+        }
+
+        // If target user is created by a retailer under this distributor
+        if (targetUser.role === 'user') {
+            // Find all retailers under this distributor
+            const retailers = await User.find({
+                createdBy: distributorId,
+                role: 'retailer'
+            }).select('_id').lean();
+
+            const retailerIds = retailers.map(r => r._id.toString());
+            console.log(`isUserInDistributorHierarchy: Found retailers under distributor ${distributorId}: ${retailerIds}`);
+
+            if (retailerIds.includes(targetUser.createdBy?.toString())) {
+                console.log(`isUserInDistributorHierarchy: User ${targetUserId} is created by retailer under distributor ${distributorId}`);
+                return true;
+            }
+        }
+
+        console.log(`isUserInDistributorHierarchy: User ${targetUserId} is NOT in distributor ${distributorId}'s hierarchy`);
+        return false;
+    }
+
+    static async isUserInSuperDistributorHierarchy(targetUserId: string, superDistributorId: string): Promise<boolean> {
+        // Check if the target user is in the super distributor's hierarchy
+        const targetUser = await User.findById(targetUserId);
+        if (!targetUser) return false;
+
+        // If target user is directly created by super distributor
+        if (targetUser.createdBy?.toString() === superDistributorId) {
+            return true;
+        }
+
+        // If target user is created by a distributor under this super distributor
+        if (targetUser.role === 'distributor' || targetUser.role === 'retailer' || targetUser.role === 'user') {
+            // Find all distributors under this super distributor
+            const distributors = await User.find({
+                createdBy: superDistributorId,
+                role: 'distributor'
+            }).select('_id').lean();
+
+            const distributorIds = distributors.map(d => d._id.toString());
+
+            // Check if target user was created by one of these distributors
+            if (distributorIds.includes(targetUser.createdBy?.toString())) {
+                return true;
+            }
+
+            // Check if target user was created by a retailer under these distributors
+            if (targetUser.role === 'user') {
+                const retailers = await User.find({
+                    createdBy: { $in: distributorIds },
+                    role: 'retailer'
+                }).select('_id').lean();
+
+                const retailerIds = retailers.map(r => r._id.toString());
+
+                if (retailerIds.includes(targetUser.createdBy?.toString())) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     static async updateUser(userId: string, updates: Partial<HierarchyUser>, currentUser: any): Promise<HierarchyUser> {
+        console.log(`updateUser: START - User ${currentUser._id} (${currentUser.role}) trying to update user ${userId}`);
+        console.log(`updateUser: Current user role: "${currentUser.role}"`);
         // Check permissions
         const targetUser = await User.findById(userId);
         if (!targetUser) {
+            console.log(`updateUser: Target user ${userId} not found`);
             const error = new Error('User not found');
             (error as any).status = 404;
             throw error;
         }
+        console.log(`updateUser: Target user role: "${targetUser.role}"`);
 
         // Permission checks based on roles
+        console.log(`updateUser: Checking permissions for role: ${currentUser.role}`);
         if (currentUser.role === 'admin') {
+            console.log(`updateUser: Admin user - can update anyone`);
             // Admin can update anyone
         } else if (currentUser.role === 'super_distributor') {
+            console.log(`updateUser: Super distributor branch`);
             // Super distributor can only update distributors, retailers, and users under them
             if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                console.log(`updateUser: Super distributor cannot update ${targetUser.role}`);
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                console.log(`updateUser: User not in super distributor hierarchy`);
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
         } else if (currentUser.role === 'distributor') {
+            console.log(`updateUser: Distributor branch - checking permissions`);
             // Distributor can only update retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
+                console.log(`updateUser: Distributor cannot update role ${targetUser.role}`);
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
+            console.log(`updateUser: Role check passed, checking hierarchy`);
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            console.log(`updateUser: Hierarchy check result: ${isInHierarchy}`);
+            if (!isInHierarchy) {
+                console.log(`updateUser: User ${userId} is not in distributor ${currentUser._id}'s hierarchy`);
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
+            console.log(`updateUser: Permission checks passed, proceeding with update`);
         } else if (currentUser.role === 'retailer') {
+            console.log(`updateUser: Retailer branch`);
             // Retailer can only update users under them
             if (targetUser.role !== 'user') {
+                console.log(`updateUser: Retailer cannot update role ${targetUser.role}`);
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                console.log(`updateUser: User not in retailer hierarchy`);
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
         }
 
         // Update the user
+        console.log(`updateUser: Updating user ${userId} with data:`, updates);
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             { $set: updates },
@@ -645,11 +844,13 @@ export class UserService {
         ).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
 
         if (!updatedUser) {
+            console.log(`updateUser: User ${userId} not found after update attempt`);
             const error = new Error('User not found');
             (error as any).status = 404;
             throw error;
         }
 
+        console.log(`updateUser: Successfully updated user ${userId}`);
         return updatedUser;
     }
 
@@ -672,10 +873,24 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else if (currentUser.role === 'distributor') {
             // Distributor can only delete retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
@@ -686,7 +901,15 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
@@ -730,10 +953,24 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else if (currentUser.role === 'distributor') {
             // Distributor can only transfer to retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
@@ -744,7 +981,15 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
@@ -780,10 +1025,24 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else if (currentUser.role === 'distributor') {
             // Distributor can only adjust retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
@@ -794,7 +1053,15 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
@@ -825,9 +1092,23 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else if (currentUser.role === 'distributor') {
             if(!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
@@ -837,7 +1118,15 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
@@ -874,10 +1163,24 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in super distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else if (currentUser.role === 'distributor') {
             // Distributor can only unban retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            // Check if target user is in distributor's hierarchy
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
@@ -888,7 +1191,15 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
+            // Check if target user is in retailer's hierarchy
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
         } else {
+            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
