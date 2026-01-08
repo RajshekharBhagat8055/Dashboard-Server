@@ -48,12 +48,54 @@ export interface MoneyTransactionsBreakdown {
   };
 }
 
+// Round interface for individual rounds within runs
+export interface RoundData {
+  round_number: number;
+  ante: number;
+  blind_name: string;
+  blind_type: string;
+  start_time: string;
+  end_time: string;
+  starting_money: number;
+  ending_money: number;
+  score_earned: number;
+  target_score: number;
+  hands_played: number;
+  discards_used: number;
+  money_earned: number;
+  rerolls_count: number;
+  rerolls_spent: number;
+  poker_hands: Map<string, number>;
+  purchases: any[];
+  sales: any[];
+  cards_played: any[];
+  cards_discarded: any[];
+  consumables_used: any[];
+  boosters_opened: any[];
+  joker_abilities: any[];
+  completed: boolean;
+  victory: boolean;
+}
+
+// Run interface for individual runs within sessions
+export interface RunData {
+  run_number: number;
+  start_time: string;
+  end_time: string;
+  ante_reached: number;
+  final_score: number;
+  rounds_completed: number;
+  outcome: "win" | "loss" | "cash_out" | "abandoned";
+  rounds: RoundData[];
+}
+
 // Main game session interface
 export interface IGameSession extends Document {
   // Session identification
   session_id: number;
   machine_id: string;
   run_number: number;
+  schema_version: number; // v1 = flat rounds[], v2 = nested runs[].rounds[]
 
   // Timing (human-readable format: "2024-12-25 14:30:56")
   start_time: string;
@@ -71,10 +113,8 @@ export interface IGameSession extends Document {
   session_net_profit: number; // Machine profit: money_deposited - money_claimed
   money_transactions_breakdown: MoneyTransactionsBreakdown;
 
-  // Round-by-round data (current/last run)
-  rounds: any[];
-  // Multi-run tracking
-  runs: any[]; // Array of per-run summaries
+  // Multi-run tracking with nested rounds (SCHEMA v2)
+  runs: RunData[];
   total_runs: number;
   rounds_completed: number;
 
@@ -101,6 +141,9 @@ export interface IGameSession extends Document {
 
   // Methods
   getSummary(): GameSessionSummary;
+  isLegacySchema(): boolean;
+  getAllRounds(): RoundData[];
+  getRoundsForRun(runNumber: number): RoundData[];
 }
 
 // Static methods interface
@@ -148,6 +191,10 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
     type: Number,
     default: 0,
     index: true
+  },
+  schema_version: {
+    type: Number,
+    default: 2  // v1 = flat rounds[], v2 = nested runs[].rounds[]
   },
 
   // Timing (human-readable format: "2024-12-25 14:30:56")
@@ -253,14 +300,49 @@ const GameSessionSchema = new mongoose.Schema<IGameSession>({
     }
   },
 
-  // Round-by-round data (current/last run)
-  rounds: [{
-    type: mongoose.Schema.Types.Mixed
-  }] as any,
-  // Multi-run tracking
+  // Multi-run tracking with nested rounds (SCHEMA v2)
   runs: [{
-    type: mongoose.Schema.Types.Mixed
-  }] as any,
+    run_number: { type: Number, required: true },
+    start_time: { type: String, required: true },
+    end_time: { type: String, required: true },
+    ante_reached: { type: Number, default: 1 },
+    final_score: { type: Number, default: 0 },
+    rounds_completed: { type: Number, default: 0 },
+    outcome: {
+      type: String,
+      enum: ["win", "loss", "cash_out", "abandoned"],
+      required: true
+    },
+
+    // Nested rounds array for this specific run
+    rounds: [{
+      round_number: { type: Number, required: true },
+      ante: { type: Number, required: true },
+      blind_name: String,
+      blind_type: String,
+      start_time: String,
+      end_time: String,
+      starting_money: { type: Number, default: 0 },
+      ending_money: { type: Number, default: 0 },
+      score_earned: { type: Number, default: 0 },
+      target_score: { type: Number, default: 0 },
+      hands_played: { type: Number, default: 0 },
+      discards_used: { type: Number, default: 0 },
+      money_earned: { type: Number, default: 0 },
+      rerolls_count: { type: Number, default: 0 },
+      rerolls_spent: { type: Number, default: 0 },
+      poker_hands: { type: Map, of: Number, default: {} },
+      purchases: { type: Array, default: [] },
+      sales: { type: Array, default: [] },
+      cards_played: { type: Array, default: [] },
+      cards_discarded: { type: Array, default: [] },
+      consumables_used: { type: Array, default: [] },
+      boosters_opened: { type: Array, default: [] },
+      joker_abilities: { type: Array, default: [] },
+      completed: { type: Boolean, default: false },
+      victory: { type: Boolean, default: false }
+    }]
+  }],
   total_runs: {
     type: Number,
     default: 0
@@ -331,6 +413,31 @@ GameSessionSchema.methods.getSummary = function(this: IGameSession): GameSession
     duration: this.time_spent_readable,
     machine_profit: this.session_net_profit
   };
+};
+
+// Backward compatibility helper methods for schema v1 vs v2
+GameSessionSchema.methods.isLegacySchema = function(this: IGameSession): boolean {
+  // Old schema (v1): schema_version < 2 or runs without nested rounds
+  return this.schema_version < 2 ||
+         (this.runs && this.runs.length > 0 && !this.runs[0].rounds);
+};
+
+GameSessionSchema.methods.getAllRounds = function(this: IGameSession): RoundData[] {
+  // New schema (v2): flatten rounds from all runs
+  if (this.runs && this.runs.length > 0 && this.runs[0].rounds) {
+    return this.runs.flatMap(run => run.rounds || []);
+  }
+  // For backward compatibility, check if there's a legacy rounds field
+  // This would be added dynamically for old data
+  return (this as any).rounds || [];
+};
+
+GameSessionSchema.methods.getRoundsForRun = function(this: IGameSession, runNumber: number): RoundData[] {
+  if (this.runs && this.runs.length > 0) {
+    const run = this.runs.find(r => r.run_number === runNumber);
+    return run?.rounds || [];
+  }
+  return [];
 };
 
 // Static method to get statistics
