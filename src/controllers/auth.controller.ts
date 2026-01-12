@@ -71,12 +71,13 @@ const login = async (req: Request, res: Response) => {
     // Set HttpOnly cookies for secure token storage
     const isProduction = process.env.NODE_ENV === 'production';
     const isNetworkAccess = req.hostname.startsWith('192.168.');
+    const isHttpServer = req.protocol === 'http' && req.hostname === '72.60.220.10';
 
     // Configure cookie options based on environment
     const baseCookieOptions: any = {
       httpOnly: true,        // Prevents JavaScript access (XSS protection)
-      secure: isProduction,  // HTTPS only in production
-      sameSite: isProduction ? 'none' : 'lax', // 'none' for cross-domain, 'lax' for localhost
+      secure: isProduction && !isHttpServer,  // HTTPS only in production, but allow HTTP for 72.60.220.10
+      sameSite: (isProduction && !isHttpServer) ? 'none' : 'lax', // 'none' for cross-domain, 'lax' for localhost/HTTP
       maxAge: 15 * 60 * 1000 // 15 minutes (access token expiry)
     };
 
