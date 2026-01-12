@@ -50,6 +50,12 @@ const corsOptions = {
       'https://dashboard-server-s25r.onrender.com' // Your current Render backend URL
     );
 
+    // Add FRONTEND_URL from environment variable if set
+    if (process.env.FRONTEND_URL) {
+      allowedOrigins.push(process.env.FRONTEND_URL);
+      console.log('Added FRONTEND_URL to CORS origins:', process.env.FRONTEND_URL);
+    }
+
     // Check if the origin matches any allowed pattern
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (typeof allowedOrigin === 'string') {
