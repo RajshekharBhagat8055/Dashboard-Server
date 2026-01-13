@@ -130,11 +130,12 @@ const logout = async (req: Request, res: Response) => {
     // Clear HttpOnly cookies containing tokens
     const isProduction = process.env.NODE_ENV === 'production';
     const isNetworkAccess = req.hostname.startsWith('192.168.');
+    const isHttpServer = req.protocol === 'http' && req.hostname === '72.60.220.10';
 
     const clearCookieOptions: any = {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax'
+      secure: isProduction && !isHttpServer,  // HTTPS only in production, but allow HTTP for 72.60.220.10
+      sameSite: (isProduction && !isHttpServer) ? 'none' : 'lax' // 'none' for cross-domain, 'lax' for localhost/HTTP
     };
 
     // For network access, include domain
@@ -216,11 +217,12 @@ const refreshToken = async (req: Request, res: Response) => {
     // Set new access token cookie
     const isProduction = process.env.NODE_ENV === 'production';
     const isNetworkAccess = req.hostname.startsWith('192.168.');
+    const isHttpServer = req.protocol === 'http' && req.hostname === '72.60.220.10';
 
     const refreshCookieOptions: any = {
       httpOnly: true,
-      secure: isProduction,
-      sameSite: isProduction ? 'none' : 'lax',
+      secure: isProduction && !isHttpServer,  // HTTPS only in production, but allow HTTP for 72.60.220.10
+      sameSite: (isProduction && !isHttpServer) ? 'none' : 'lax', // 'none' for cross-domain, 'lax' for localhost/HTTP
       maxAge: 15 * 60 * 1000 // 15 minutes
     };
 
