@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import User from "../models/User";
 import { generateTokenPair, verifyRefreshToken, generateAccessToken } from "../utils/jwt";
+import jwt from "jsonwebtoken";
 
 // Login controller
 const login = async (req: Request, res: Response) => {
@@ -475,4 +476,105 @@ const createUser = async (req: Request, res: Response) => {
   }
 };
 
-export { login, logout, refreshToken, getProfile, changePassword, createUser };
+// Get skill game token for current authenticated admin user
+const getSkillGameToken = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required"
+      });
+    }
+
+    // Only allow admin, super_distributor, distributor, and retailer roles
+    const allowedRoles = ['admin', 'super_distributor', 'distributor', 'retailer'];
+    if (!req.user?.role || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Only admin, super_distributor, distributor, and retailer can access skill game."
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    if (!user.isActive || user.isBanned) {
+      return res.status(401).json({
+        success: false,
+        message: "Account is inactive or banned"
+      });
+    }
+
+    // Generate skill game compatible token (same format as skill_game_server expects)
+    // Use the same JWT secret so skill_game_server can verify it
+    const JWT_ACCESS_SECRET: jwt.Secret = process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
+    const JWT_ACCESS_EXPIRE = process.env.JWT_ACCESS_EXPIRE || '15m';
+
+    // Log secret info (without exposing the full secret)
+    const secretStr = typeof JWT_ACCESS_SECRET === 'string' ? JWT_ACCESS_SECRET : 'not-string';
+    const envSecret = process.env.JWT_ACCESS_SECRET || 'NOT_SET';
+    console.log('[getSkillGameToken] Using JWT secret:', {
+      secretLength: secretStr.length,
+      secretSet: !!process.env.JWT_ACCESS_SECRET,
+      secretPreview: secretStr.substring(0, 4) + '...' + secretStr.substring(secretStr.length - 4),
+      envSecretLength: envSecret.length,
+      envSecretPreview: envSecret !== 'NOT_SET' ? (envSecret.substring(0, 4) + '...' + envSecret.substring(envSecret.length - 4)) : 'NOT_SET',
+      usingDefault: !process.env.JWT_ACCESS_SECRET,
+    });
+
+    // Generate token without issuer/audience to be compatible with skill_game_server
+    // skill_game_server doesn't check issuer/audience, so we omit them
+    const skillGameToken = jwt.sign(
+      {
+        userId: user._id.toString(),
+        username: user.username,
+        role: user.role,
+        uniqueId: user.uniqueId,
+        wallet: user.creditBalance ?? 0, // Map creditBalance to wallet
+        // No sessionId for admin access - skill game will handle this differently
+      },
+      JWT_ACCESS_SECRET,
+      {
+        expiresIn: JWT_ACCESS_EXPIRE,
+        // Don't set issuer/audience - skill_game_server doesn't verify them
+      } as jwt.SignOptions
+    );
+    
+    console.log('[getSkillGameToken] Generated token for user:', {
+      userId: user._id.toString(),
+      username: user.username,
+      role: user.role,
+      tokenLength: skillGameToken.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        accessToken: skillGameToken,
+        user: {
+          id: user._id.toString(),
+          username: user.username,
+          role: user.role,
+          wallet: user.creditBalance ?? 0,
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error("Get skill game token error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken };

@@ -119,9 +119,51 @@ function validateArgs(args: any) {
 
 async function createAdmin(userData: any) {
   try {
-    // Connect to MongoDB
-    await mongoose.connect(process.env.MONGODB_URI as string);
-    console.log('✅ Connected to MongoDB');
+    // Connect to MongoDB with database name from environment
+    const uri = process.env.MONGODB_URI as string;
+    let dbName = process.env.DB_NAME;
+    
+    // Check if URI already has a database name
+    const uriParts = uri.split('/');
+    const hasDbInUri = uriParts.length > 3 && uriParts[uriParts.length - 1] && 
+                       !uriParts[uriParts.length - 1].includes('@') && 
+                       !uriParts[uriParts.length - 1].includes('?');
+    
+    let connectionUri = uri;
+    
+    if (hasDbInUri && !dbName) {
+      // Use database name from URI if DB_NAME not set
+      dbName = uriParts[uriParts.length - 1].split('?')[0];
+      console.log(`Using database from URI: ${dbName}`);
+    } else if (dbName) {
+      // Use DB_NAME from env, replace or add to URI
+      if (hasDbInUri) {
+        // Replace existing database name
+        uriParts[uriParts.length - 1] = dbName + (uriParts[uriParts.length - 1].includes('?') ? '?' + uriParts[uriParts.length - 1].split('?')[1] : '');
+        connectionUri = uriParts.join('/');
+      } else {
+        // Add database name
+        if (uri.endsWith('/')) {
+          connectionUri = `${uri}${dbName}`;
+        } else {
+          connectionUri = `${uri}/${dbName}`;
+        }
+      }
+      console.log(`Using database from DB_NAME env: ${dbName}`);
+    } else {
+      // No DB_NAME and no database in URI - use default
+      dbName = 'Admin';
+      if (uri.endsWith('/')) {
+        connectionUri = `${uri}${dbName}`;
+      } else {
+        connectionUri = `${uri}/${dbName}`;
+      }
+      console.log(`Using default database: ${dbName}`);
+    }
+    
+    console.log(`Connecting to database: ${dbName}`);
+    await mongoose.connect(connectionUri);
+    console.log(`✅ Connected to MongoDB database: ${dbName}`);
 
     // Check if user already exists
     const existingUser = await User.findOne({
