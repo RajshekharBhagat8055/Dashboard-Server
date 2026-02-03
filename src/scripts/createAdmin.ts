@@ -120,7 +120,8 @@ function validateArgs(args: any) {
 async function createAdmin(userData: any) {
   try {
     // Connect to MongoDB
-    await mongoose.connect(process.env.MONGODB_URI as string);
+    const databaseName = process.env.DB_NAME;
+    await mongoose.connect(`${process.env.MONGODB_URI}/${databaseName ? databaseName : ''}`);
     console.log('✅ Connected to MongoDB');
 
     // Check if user already exists

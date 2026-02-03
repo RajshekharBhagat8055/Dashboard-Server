@@ -199,16 +199,10 @@ userSchema.statics.generateUniqueId = function(role: string): string {
 
   const prefix = prefixes[role as keyof typeof prefixes] || 'U';
 
-  // Generate a random 3-digit number
   const randomNum = Math.floor(Math.random() * 900) + 100;
 
   return `${prefix}${randomNum}`;
 };
-
-// Virtual for full name (if we add firstName/lastName later)
-// userSchema.virtual('fullName').get(function() {
-//   return `${this.firstName} ${this.lastName}`;
-// });
 
 const User = mongoose.model<IUser>('User', userSchema);
 
