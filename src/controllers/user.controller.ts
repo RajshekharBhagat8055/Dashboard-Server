@@ -1,5 +1,6 @@
 import { Request, Response } from "express"
 import { UserService } from "../services/user.services";
+import User from "../models/User";
 
 // ============ ADMIN ENDPOINTS ============
 
@@ -659,6 +660,199 @@ const unBanUser = async( req: Request, res: Response) => {
     }
 }
 
+// ============ HIERARCHY SELECTION ENDPOINTS (for cascading dropdowns) ============
+
+/**
+ * Get super distributors for hierarchy selection
+ * Used in cascading dropdowns when creating users
+ */
+const getSuperDistributorsForHierarchy = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        let superDistributors;
+
+        // Admin can see all super distributors
+        if (req.user?.role === 'admin') {
+            superDistributors = await UserService.getAllSuperDistributors();
+        }
+        // Super distributor can only see themselves
+        else if (req.user?.role === 'super_distributor') {
+            const selfUser = await UserService.getUserById(userId.toString(), req.user);
+            superDistributors = selfUser ? [selfUser] : [];
+        }
+        else {
+            return res.status(403).json({
+                success: false,
+                message: "Access denied - Only Admin and Super Distributors can access this",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: superDistributors,
+            count: superDistributors.length,
+        });
+    } catch (error) {
+        console.error(`Error in getSuperDistributorsForHierarchy: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+};
+
+/**
+ * Get distributors under a specific super distributor
+ * Used in cascading dropdown when selecting distributor
+ */
+const getDistributorsUnderSuperDistributor = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        const { superDistributorId } = req.params;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        if (!superDistributorId) {
+            return res.status(400).json({
+                success: false,
+                message: "Super Distributor ID is required",
+            });
+        }
+
+        // Check if user has permission to see distributors under this super distributor
+        let distributors: any[] = [];
+
+        if (req.user?.role === 'admin') {
+            // Admin can see distributors under any super distributor
+            distributors = await UserService.getDistributorsUnderSuperDistributor(superDistributorId);
+        } else if (req.user?.role === 'super_distributor') {
+            // Super distributor can only see their own distributors
+            if (userId.toString() !== superDistributorId) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - You can only view your own distributors",
+                });
+            }
+            distributors = await UserService.getDistributorsUnderSuperDistributor(superDistributorId);
+        } else if (req.user?.role === 'distributor') {
+            // Distributor can only see themselves
+            const selfUser = await UserService.getUserById(userId.toString(), req.user);
+            if (selfUser && selfUser.superDistributorId?.toString() === superDistributorId) {
+                distributors = [selfUser];
+            } else {
+                distributors = [];
+            }
+        } else {
+            return res.status(403).json({
+                success: false,
+                message: "Access denied",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: distributors,
+            count: distributors.length,
+        });
+    } catch (error) {
+        console.error(`Error in getDistributorsUnderSuperDistributor: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+};
+
+/**
+ * Get retailers under a specific distributor
+ * Used in cascading dropdown when selecting retailer
+ */
+const getRetailersUnderDistributor = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        const { distributorId } = req.params;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: "Distributor ID is required",
+            });
+        }
+
+        let retailers: any[] = [];
+
+        if (req.user?.role === 'admin') {
+            // Admin can see retailers under any distributor
+            retailers = await UserService.getRetailersUnderDistributor(distributorId);
+        } else if (req.user?.role === 'super_distributor') {
+            // Super distributor can see retailers under their distributors
+            // Directly check the superDistributorId field instead of using getUserById
+            const distributor = await User.findById(distributorId).select('superDistributorId role').lean();
+            if (distributor && distributor.role === 'distributor' && distributor.superDistributorId?.toString() === userId.toString()) {
+                retailers = await UserService.getRetailersUnderDistributor(distributorId);
+            } else {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - This distributor is not under you",
+                });
+            }
+        } else if (req.user?.role === 'distributor') {
+            // Distributor can only see their own retailers
+            if (userId.toString() !== distributorId) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - You can only view your own retailers",
+                });
+            }
+            retailers = await UserService.getRetailersUnderDistributor(distributorId);
+        } else if (req.user?.role === 'retailer') {
+            // Retailer can only see themselves
+            const selfUser = await UserService.getUserById(userId.toString(), req.user);
+            if (selfUser && selfUser.distributorId?.toString() === distributorId) {
+                retailers = [selfUser];
+            } else {
+                retailers = [];
+            }
+        } else {
+            return res.status(403).json({
+                success: false,
+                message: "Access denied",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: retailers,
+            count: retailers.length,
+        });
+    } catch (error) {
+        console.error(`Error in getRetailersUnderDistributor: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+};
+
 export {
     // Admin endpoints
     getAllSuperDistributors,
@@ -692,4 +886,9 @@ export {
     adjustCredit,
     banUser,
     unBanUser,
+
+    // Hierarchy selection endpoints
+    getSuperDistributorsForHierarchy,
+    getDistributorsUnderSuperDistributor,
+    getRetailersUnderDistributor,
 };

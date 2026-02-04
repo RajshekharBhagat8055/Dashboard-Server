@@ -8,7 +8,9 @@
     "dev": "ts-node src/server.ts",
     "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "create-admin": "ts-node src/scripts/createAdmin.ts"
+    "create-admin": "ts-node src/scripts/createAdmin.ts",
+    "check-hierarchy": "ts-node src/scripts/check-hierarchy.ts",
+    "update-hierarchy": "ts-node src/scripts/update-hierarchy.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
