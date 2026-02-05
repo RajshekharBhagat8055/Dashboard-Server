@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import User from "../models/User";
 import { generateTokenPair, verifyRefreshToken, generateAccessToken } from "../utils/jwt";
+import { canCreateRole, validateHierarchyChain, getRequiredHierarchyFields } from "../utils/hierarchy.helper";
+import jwt from "jsonwebtoken";
 
 // Login controller
 const login = async (req: Request, res: Response) => {
@@ -109,7 +111,13 @@ const login = async (req: Request, res: Response) => {
           uniqueId: user.uniqueId,
           creditBalance: user.creditBalance,
           isOnline: true,
-          lastLogin: user.lastLogin
+          lastLogin: user.lastLogin,
+          // Hierarchy fields
+          superDistributorId: user.superDistributorId,
+          distributorId: user.distributorId,
+          retailerId: user.retailerId,
+          parentId: user.parentId,
+          createdBy: user.createdBy
         }
         // Remove tokens from response - they're in HttpOnly cookies
       }
@@ -311,7 +319,13 @@ const getProfile = async (req: Request, res: Response) => {
           lastLogin: user.lastLogin,
           lastActivity: user.lastActivity,
           createdAt: user.createdAt,
-          updatedAt: user.updatedAt
+          updatedAt: user.updatedAt,
+          // Hierarchy fields
+          superDistributorId: user.superDistributorId,
+          distributorId: user.distributorId,
+          retailerId: user.retailerId,
+          parentId: user.parentId,
+          createdBy: user.createdBy
         }
       }
     });
@@ -400,7 +414,19 @@ const changePassword = async (req: Request, res: Response) => {
 // Create new user (admin functionality)
 const createUser = async (req: Request, res: Response) => {
   try {
-    const { username, password, email, role, creditBalance, commissionRate, status, createdBy } = req.body;
+    const {
+      username,
+      password,
+      email,
+      role,
+      creditBalance,
+      commissionRate,
+      status,
+      createdBy,
+      superDistributorId,
+      distributorId,
+      retailerId
+    } = req.body;
 
     // Validate required fields
     if (!username || !password || !role) {
@@ -419,6 +445,69 @@ const createUser = async (req: Request, res: Response) => {
       });
     }
 
+    // Check if creator has permission to create this role
+    const creatorRole = req.user?.role;
+    if (!creatorRole) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required"
+      });
+    }
+
+    // Check if creator can create this role
+    if (!canCreateRole(creatorRole, role)) {
+      return res.status(403).json({
+        success: false,
+        message: `${creatorRole} cannot create ${role} role`
+      });
+    }
+
+    // Validate hierarchy chain based on target role
+    const requiredFields = getRequiredHierarchyFields(role);
+
+    // Build hierarchy chain object
+    const hierarchyChain: any = {};
+    if (requiredFields.includes('superDistributorId')) {
+      if (!superDistributorId) {
+        return res.status(400).json({
+          success: false,
+          message: `Super Distributor is required for creating ${role}`
+        });
+      }
+      hierarchyChain.superDistributorId = superDistributorId;
+    }
+
+    if (requiredFields.includes('distributorId')) {
+      if (!distributorId) {
+        return res.status(400).json({
+          success: false,
+          message: `Distributor is required for creating ${role}`
+        });
+      }
+      hierarchyChain.distributorId = distributorId;
+    }
+
+    if (requiredFields.includes('retailerId')) {
+      if (!retailerId) {
+        return res.status(400).json({
+          success: false,
+          message: `Retailer is required for creating ${role}`
+        });
+      }
+      hierarchyChain.retailerId = retailerId;
+    }
+
+    // Validate the hierarchy chain
+    if (requiredFields.length > 0) {
+      const validation = await validateHierarchyChain(hierarchyChain, role);
+      if (!validation.isValid) {
+        return res.status(400).json({
+          success: false,
+          message: validation.error || "Invalid hierarchy chain"
+        });
+      }
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ username: username.toLowerCase() });
     if (existingUser) {
@@ -431,7 +520,19 @@ const createUser = async (req: Request, res: Response) => {
     // Generate uniqueId
     const uniqueId = (User as any).generateUniqueId(role);
 
-    // Create new user
+    // Determine parentId based on role
+    let parentId;
+    if (role === 'user' && retailerId) {
+      parentId = retailerId;
+    } else if (role === 'retailer' && distributorId) {
+      parentId = distributorId;
+    } else if (role === 'distributor' && superDistributorId) {
+      parentId = superDistributorId;
+    } else if (role === 'super_distributor') {
+      parentId = req.user?._id; // Admin is parent
+    }
+
+    // Create new user with hierarchy chain
     const newUser = new User({
       username: username.toLowerCase(),
       password, // Will be hashed by hashPassword method
@@ -441,7 +542,11 @@ const createUser = async (req: Request, res: Response) => {
       creditBalance: creditBalance || 0,
       commissionRate: commissionRate || 0,
       status: status || 'active',
-      createdBy: createdBy || req.user?._id // Default to current user if not specified
+      createdBy: createdBy || req.user?._id, // Default to current user if not specified
+      parentId,
+      superDistributorId: hierarchyChain.superDistributorId,
+      distributorId: hierarchyChain.distributorId,
+      retailerId: hierarchyChain.retailerId
     });
 
     // Hash password
@@ -461,6 +566,9 @@ const createUser = async (req: Request, res: Response) => {
           role: newUser.role,
           uniqueId: newUser.uniqueId,
           isActive: newUser.isActive,
+          superDistributorId: newUser.superDistributorId,
+          distributorId: newUser.distributorId,
+          retailerId: newUser.retailerId,
           createdAt: newUser.createdAt
         }
       }
@@ -475,4 +583,105 @@ const createUser = async (req: Request, res: Response) => {
   }
 };
 
-export { login, logout, refreshToken, getProfile, changePassword, createUser };
+// Get skill game token for current authenticated admin user
+const getSkillGameToken = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required"
+      });
+    }
+
+    // Only allow admin, super_distributor, distributor, and retailer roles
+    const allowedRoles = ['admin', 'super_distributor', 'distributor', 'retailer'];
+    if (!req.user?.role || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied. Only admin, super_distributor, distributor, and retailer can access skill game."
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    if (!user.isActive || user.isBanned) {
+      return res.status(401).json({
+        success: false,
+        message: "Account is inactive or banned"
+      });
+    }
+
+    // Generate skill game compatible token (same format as skill_game_server expects)
+    // Use the same JWT secret so skill_game_server can verify it
+    const JWT_ACCESS_SECRET: jwt.Secret = process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
+    const JWT_ACCESS_EXPIRE = process.env.JWT_ACCESS_EXPIRE || '15m';
+
+    // Log secret info (without exposing the full secret)
+    const secretStr = typeof JWT_ACCESS_SECRET === 'string' ? JWT_ACCESS_SECRET : 'not-string';
+    const envSecret = process.env.JWT_ACCESS_SECRET || 'NOT_SET';
+    console.log('[getSkillGameToken] Using JWT secret:', {
+      secretLength: secretStr.length,
+      secretSet: !!process.env.JWT_ACCESS_SECRET,
+      secretPreview: secretStr.substring(0, 4) + '...' + secretStr.substring(secretStr.length - 4),
+      envSecretLength: envSecret.length,
+      envSecretPreview: envSecret !== 'NOT_SET' ? (envSecret.substring(0, 4) + '...' + envSecret.substring(envSecret.length - 4)) : 'NOT_SET',
+      usingDefault: !process.env.JWT_ACCESS_SECRET,
+    });
+
+    // Generate token without issuer/audience to be compatible with skill_game_server
+    // skill_game_server doesn't check issuer/audience, so we omit them
+    const skillGameToken = jwt.sign(
+      {
+        userId: user._id.toString(),
+        username: user.username,
+        role: user.role,
+        uniqueId: user.uniqueId,
+        wallet: user.creditBalance ?? 0, // Map creditBalance to wallet
+        // No sessionId for admin access - skill game will handle this differently
+      },
+      JWT_ACCESS_SECRET,
+      {
+        expiresIn: JWT_ACCESS_EXPIRE,
+        // Don't set issuer/audience - skill_game_server doesn't verify them
+      } as jwt.SignOptions
+    );
+    
+    console.log('[getSkillGameToken] Generated token for user:', {
+      userId: user._id.toString(),
+      username: user.username,
+      role: user.role,
+      tokenLength: skillGameToken.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        accessToken: skillGameToken,
+        user: {
+          id: user._id.toString(),
+          username: user.username,
+          role: user.role,
+          wallet: user.creditBalance ?? 0,
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error("Get skill game token error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken };

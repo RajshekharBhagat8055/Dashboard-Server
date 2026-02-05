@@ -116,7 +116,7 @@ export class UserService {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
         const distributors = await User.find({
-            createdBy: superDistributorId,
+            superDistributorId: superDistributorId,
             role: 'distributor',
         }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
@@ -132,223 +132,85 @@ export class UserService {
     static async getRetailersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
-        // Get all distributors under this super distributor
-        const distributors = await User.find({
-            createdBy: superDistributorId,
-            role: 'distributor'
-        }).select('_id').lean();
-
-        const distributorIds = distributors.map(d => d._id);
-
-        // Get retailers created directly by the super distributor
-        const directRetailers = await User.find({
-            createdBy: superDistributorId,
+        // Get all retailers under this super distributor using the hierarchy field
+        const retailers = await User.find({
+            superDistributorId: superDistributorId,
             role: 'retailer'
         })
         .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
-        // Get retailers created by distributors under this super distributor
-        let distributorRetailers: any[] = [];
-        if (distributorIds.length > 0) {
-            distributorRetailers = await User.find({
-                createdBy: { $in: distributorIds },
-                role: 'retailer'
-            })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
-            .sort({createdAt: -1})
-            .lean();
-        }
-
-        // Combine both arrays, dynamically calculate isOnline, and sort by creation date
-        const allRetailers = [...directRetailers, ...distributorRetailers]
-            .map(retailer => ({
-                ...retailer,
-                isOnline: retailer.isOnline || false
-            }))
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        return allRetailers;
+        // Use stored isOnline status from database
+        return retailers.map(retailer => ({
+            ...retailer,
+            isOnline: retailer.isOnline || false
+        }));
     }
 
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        // Get distributors under super distributor
-        const distributors = await User.find({
-            createdBy: superDistributorId,
-            role: 'distributor'
-        }).select('_id').lean();
-
-        const distributorIds = distributors.map(d => d._id);
-
-        // Get retailers created directly by the super distributor
-        const directRetailers = await User.find({
-            createdBy: superDistributorId,
-            role: 'retailer'
-        }).select('_id').lean();
-
-        // Get retailers created by distributors under this super distributor
-        let distributorRetailers: any[] = [];
-        if (distributorIds.length > 0) {
-            distributorRetailers = await User.find({
-                createdBy: { $in: distributorIds },
-                role: 'retailer'
-            }).select('_id').lean();
-        }
-
-        const allRetailerIds = [...directRetailers, ...distributorRetailers].map(r => r._id);
-
-        // Get users created directly by the super distributor
-        const directUsers = await User.find({
-            createdBy: superDistributorId,
+        // Get all users under this super distributor using the hierarchy field
+        const users = await User.find({
+            superDistributorId: superDistributorId,
             role: 'user'
         })
         .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
-        // Get users created directly by distributors under this super distributor
-        let distributorUsers: any[] = [];
-        if (distributorIds.length > 0) {
-            distributorUsers = await User.find({
-                createdBy: { $in: distributorIds },
-                role: 'user'
-            })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
-            .sort({createdAt: -1})
-            .lean();
-        }
-
-        // Get users created by retailers under this super distributor
-        let retailerUsers: any[] = [];
-        if (allRetailerIds.length > 0) {
-            retailerUsers = await User.find({
-                createdBy: { $in: allRetailerIds },
-                role: 'user'
-            })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
-            .sort({createdAt: -1})
-            .lean();
-        }
-
-        // Combine all arrays, dynamically calculate isOnline, and sort by creation date
-        const allUsers = [...directUsers, ...distributorUsers, ...retailerUsers]
-            .map(user => ({
-                ...user,
-                isOnline: user.isOnline || false
-            }))
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        return allUsers;
+        // Use stored isOnline status from database
+        return users.map(user => ({
+            ...user,
+            isOnline: user.isOnline || false
+        }));
     }
 
     static async getSuperDistributorStats(superDistributorId: string): Promise<HierarchyStats> {
-        // Get distributors count
+        // Get distributors count using hierarchy field
         const distributorsCount = await User.countDocuments({
-            createdBy: superDistributorId,
+            superDistributorId: superDistributorId,
             role: 'distributor'
         });
 
-        // Get distributors IDs for further queries
-        const distributors = await User.find({
-            createdBy: superDistributorId,
-            role: 'distributor'
-        }).select('_id').lean();
-
-        const distributorIds = distributors.map(d => d._id);
-
-        // Get retailers count (both via distributors and direct creation)
-        const directRetailersCount = await User.countDocuments({
-            createdBy: superDistributorId,
+        // Get retailers count using hierarchy field
+        const retailersCount = await User.countDocuments({
+            superDistributorId: superDistributorId,
             role: 'retailer'
         });
 
-        let distributorRetailersCount = 0;
-        if (distributorIds.length > 0) {
-            distributorRetailersCount = await User.countDocuments({
-                createdBy: { $in: distributorIds },
-                role: 'retailer'
-            });
-        }
-        const retailersCount = directRetailersCount + distributorRetailersCount;
-
-        // Get all retailer IDs for users count
-        const directRetailers = await User.find({
-            createdBy: superDistributorId,
-            role: 'retailer'
-        }).select('_id').lean();
-
-        let distributorRetailers: any[] = [];
-        if (distributorIds.length > 0) {
-            distributorRetailers = await User.find({
-                createdBy: { $in: distributorIds },
-                role: 'retailer'
-            }).select('_id').lean();
-        }
-
-        const allRetailerIds = [...directRetailers, ...distributorRetailers].map(r => r._id);
-
-        // Get users count (via retailers, distributors, and direct creation)
-        const directUsersCount = await User.countDocuments({
-            createdBy: superDistributorId,
+        // Get users count using hierarchy field
+        const usersCount = await User.countDocuments({
+            superDistributorId: superDistributorId,
             role: 'user'
         });
 
-        // Users created directly by distributors under this super distributor
-        let distributorUsersCount = 0;
-        if (distributorIds.length > 0) {
-            distributorUsersCount = await User.countDocuments({
-                createdBy: { $in: distributorIds },
-                role: 'user'
-            });
-        }
-
-        let retailerUsersCount = 0;
-        if (allRetailerIds.length > 0) {
-            retailerUsersCount = await User.countDocuments({
-                createdBy: { $in: allRetailerIds },
-                role: 'user'
-            });
-        }
-        const usersCount = directUsersCount + distributorUsersCount + retailerUsersCount;
-
-        // Get total points from all hierarchy levels
-        // First, collect all user IDs in the hierarchy
+        // Get total points from all users in the hierarchy
+        // Get all user IDs in the hierarchy (SD, distributors, retailers, users)
         const hierarchyUserIds = new Set();
 
         // Add super distributor
         hierarchyUserIds.add(superDistributorId);
 
-        // Add all distributors
-        distributorIds.forEach(id => hierarchyUserIds.add(id));
+        // Add all distributors under this SD
+        const distributors = await User.find({
+            superDistributorId: superDistributorId,
+            role: 'distributor'
+        }).select('_id').lean();
+        distributors.forEach(d => hierarchyUserIds.add(d._id));
 
-        // Add all retailers
-        allRetailerIds.forEach(id => hierarchyUserIds.add(id));
+        // Add all retailers under this SD
+        const retailers = await User.find({
+            superDistributorId: superDistributorId,
+            role: 'retailer'
+        }).select('_id').lean();
+        retailers.forEach(r => hierarchyUserIds.add(r._id));
 
-        // Add all users created by super distributor
-        const directUsers = await User.find({
-            createdBy: superDistributorId,
+        // Add all users under this SD
+        const users = await User.find({
+            superDistributorId: superDistributorId,
             role: 'user'
         }).select('_id').lean();
-        directUsers.forEach(user => hierarchyUserIds.add(user._id));
-
-        // Add all users created by distributors
-        if (distributorIds.length > 0) {
-            const distributorUsers = await User.find({
-                createdBy: { $in: distributorIds },
-                role: 'user'
-            }).select('_id').lean();
-            distributorUsers.forEach(user => hierarchyUserIds.add(user._id));
-        }
-
-        // Add all users created by retailers
-        if (allRetailerIds.length > 0) {
-            const retailerUsers = await User.find({
-                createdBy: { $in: allRetailerIds },
-                role: 'user'
-            }).select('_id').lean();
-            retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
-        }
+        users.forEach(u => hierarchyUserIds.add(u._id));
 
         // Now sum all credit balances
         const totalPointsResult = await User.aggregate([
@@ -379,7 +241,7 @@ export class UserService {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
         const retailers = await User.find({
-            createdBy: distributorId,
+            distributorId: distributorId,
             role: 'retailer',
         }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
@@ -395,96 +257,55 @@ export class UserService {
     static async getUsersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
-        // Get retailers under this distributor
-        const retailers = await User.find({
-            createdBy: distributorId,
-            role: 'retailer'
-        }).select('_id').lean();
-
-        const retailerIds = retailers.map(r => r._id);
-
-        // Get users created directly by this distributor
-        const directUsers = await User.find({
-            createdBy: distributorId,
+        // Get all users under this distributor using the hierarchy field
+        const users = await User.find({
+            distributorId: distributorId,
             role: 'user'
         })
         .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})
         .lean();
 
-        // Get users under those retailers
-        const retailerUsers = await User.find({
-            createdBy: { $in: retailerIds },
-            role: 'user'
-        })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
-        .sort({createdAt: -1})
-        .lean();
-
-        // Combine both arrays, dynamically calculate isOnline, and sort by creation date
-        const allUsers = [...directUsers, ...retailerUsers]
-            .map(user => ({
-                ...user,
-                isOnline: user.isOnline || false
-            }))
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-        return allUsers;
+        // Use stored isOnline status from database
+        return users.map(user => ({
+            ...user,
+            isOnline: user.isOnline || false
+        }));
     }
 
     static async getDistributorStats(distributorId: string): Promise<HierarchyStats> {
-        // Get retailers count
+        // Get retailers count using hierarchy field
         const retailersCount = await User.countDocuments({
-            createdBy: distributorId,
+            distributorId: distributorId,
             role: 'retailer'
         });
 
-        // Get retailers IDs for further queries
-        const retailers = await User.find({
-            createdBy: distributorId,
-            role: 'retailer'
-        }).select('_id').lean();
-
-        const retailerIds = retailers.map(r => r._id);
-
-        // Get users count (direct users + users via retailers)
-        const directUsersCount = await User.countDocuments({
-            createdBy: distributorId,
+        // Get users count using hierarchy field
+        const usersCount = await User.countDocuments({
+            distributorId: distributorId,
             role: 'user'
         });
-
-        const retailerUsersCount = await User.countDocuments({
-            createdBy: { $in: retailerIds },
-            role: 'user'
-        });
-
-        const usersCount = directUsersCount + retailerUsersCount;
 
         // Get total points from all hierarchy levels
-        // First, collect all user IDs in the hierarchy
+        // Collect all user IDs in the hierarchy
         const hierarchyUserIds = new Set();
 
         // Add distributor
         hierarchyUserIds.add(distributorId);
 
-        // Add all retailers
-        retailerIds.forEach(id => hierarchyUserIds.add(id));
+        // Add all retailers under this distributor
+        const retailers = await User.find({
+            distributorId: distributorId,
+            role: 'retailer'
+        }).select('_id').lean();
+        retailers.forEach(r => hierarchyUserIds.add(r._id));
 
-        // Add all users created by distributor
-        const directUsers = await User.find({
-            createdBy: distributorId,
+        // Add all users under this distributor
+        const users = await User.find({
+            distributorId: distributorId,
             role: 'user'
         }).select('_id').lean();
-        directUsers.forEach(user => hierarchyUserIds.add(user._id));
-
-        // Add all users created by retailers
-        if (retailerIds.length > 0) {
-            const retailerUsers = await User.find({
-                createdBy: { $in: retailerIds },
-                role: 'user'
-            }).select('_id').lean();
-            retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
-        }
+        users.forEach(u => hierarchyUserIds.add(u._id));
 
         // Now sum all credit balances
         const totalPointsResult = await User.aggregate([
@@ -515,7 +336,7 @@ export class UserService {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
         const users = await User.find({
-            createdBy: retailerId,
+            retailerId: retailerId,
             role: 'user',
         }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
         .sort({createdAt: -1})

@@ -13,6 +13,11 @@ export interface IUser extends Document {
   parentId?: mongoose.Types.ObjectId; // Reference to parent user
   createdBy: mongoose.Types.ObjectId; // Who created this user
 
+  // Hierarchy Path (Complete chain for enforcing hierarchy)
+  superDistributorId?: mongoose.Types.ObjectId; // Reference to super distributor in chain
+  distributorId?: mongoose.Types.ObjectId; // Reference to distributor in chain
+  retailerId?: mongoose.Types.ObjectId; // Reference to retailer in chain
+
   // Financial Data
   creditBalance: number; // Main credit balance (points)
   playPoints: number; // Points used for playing games
@@ -90,6 +95,20 @@ const userSchema = new Schema<IUser>({
       // Admin users can be self-created, so createdBy is not required for them
       return this.role !== 'admin';
     }
+  },
+
+  // Hierarchy Path (Complete chain for enforcing hierarchy)
+  superDistributorId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  distributorId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  retailerId: {
+    type: Schema.Types.ObjectId,
+    ref: 'User'
   },
 
   // Financial Data
@@ -173,6 +192,9 @@ userSchema.index({ parentId: 1 });
 userSchema.index({ createdBy: 1 });
 userSchema.index({ isOnline: 1 });
 userSchema.index({ status: 1 });
+userSchema.index({ superDistributorId: 1 });
+userSchema.index({ distributorId: 1 });
+userSchema.index({ retailerId: 1 });
 
 // Method to hash password before saving
 userSchema.methods.hashPassword = async function(): Promise<void> {

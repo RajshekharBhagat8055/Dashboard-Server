@@ -34,6 +34,11 @@ import {
     adjustCredit,
     banUser,
     unBanUser,
+
+    // Hierarchy selection endpoints
+    getSuperDistributorsForHierarchy,
+    getDistributorsUnderSuperDistributor,
+    getRetailersUnderDistributor,
 } from "../controllers/user.controller";
 
 const userRouter = Router();
@@ -64,6 +69,11 @@ userRouter.get('/my-users-as-retailer', getMyUsersAsRetailer); // Retailers only
 
 // ============ ONLINE USERS ENDPOINTS ============
 userRouter.get('/online-users', getOnlineUsers); // All authenticated users
+
+// ============ HIERARCHY SELECTION ENDPOINTS (for cascading dropdowns) ============
+userRouter.get('/hierarchy/super-distributors', getSuperDistributorsForHierarchy); // Get SDs for hierarchy selection
+userRouter.get('/hierarchy/super-distributor/:superDistributorId/distributors', getDistributorsUnderSuperDistributor); // Get distributors under SD
+userRouter.get('/hierarchy/distributor/:distributorId/retailers', getRetailersUnderDistributor); // Get retailers under distributor
 
 // ============ INDIVIDUAL USER ENDPOINTS (comes last to avoid conflicts) ============
 userRouter.get('/user/:id', getUserById); // Get single user by ID
