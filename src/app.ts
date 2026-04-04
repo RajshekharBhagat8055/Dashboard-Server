@@ -43,13 +43,6 @@ const corsOptions = {
       );
     }
 
-    // Production origins (always allowed)
-    allowedOrigins.push(
-      'https://arka-dashboard-hub.vercel.app', // Your Vercel frontend
-      /^https:\/\/arka-dashboard-hub.*\.vercel\.app$/, // Vercel preview deployments
-      'https://dashboard-server-s25r.onrender.com' // Your current Render backend URL
-    );
-
     // Add FRONTEND_URL from environment variable if set
     if (process.env.FRONTEND_URL) {
       allowedOrigins.push(process.env.FRONTEND_URL);

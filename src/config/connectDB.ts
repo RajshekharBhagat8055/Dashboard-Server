@@ -1,13 +1,31 @@
-import mongoose from "mongoose"
+import dns from "node:dns";
+import mongoose from "mongoose";
 
-const connectDB = async(): Promise<void> => {
+const connectDB = async (): Promise<void> => {
     if (mongoose.connection.readyState >= 1) {
         console.log("MongoDB is already connected");
+        return;
     }
 
     try {
         const uri = process.env.MONGODB_URI as string;
-        const dbName = process.env.DB_NAME || 'Admin';
+        if (!uri) {
+            throw new Error("MONGODB_URI is not set");
+        }
+        const dbName = process.env.DB_NAME || "Admin";
+
+        // Windows + Node often use a resolver path where SRV lookups fail with
+        // querySrv ECONNREFUSED while other tools resolve fine. Point c-ares at public DNS.
+        if (
+            process.platform === "win32" &&
+            uri.startsWith("mongodb+srv://") &&
+            process.env.MONGO_SKIP_DNS_PATCH !== "1"
+        ) {
+            const fromEnv = process.env.MONGO_DNS_SERVERS?.split(",")
+                .map((s) => s.trim())
+                .filter(Boolean);
+            dns.setServers(fromEnv?.length ? fromEnv : ["8.8.8.8", "1.1.1.1"]);
+        }
         
         // Remove any existing database name from URI and add the one from env
         let connectionUri = uri;
