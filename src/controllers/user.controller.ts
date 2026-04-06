@@ -108,6 +108,29 @@ const getRetailers = async (req: Request, res: Response) => {
     }
 }
 
+const getBalatroRetailers = async (req: Request, res: Response) => {
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: 'Access denied - Admin only',
+            });
+        }
+        const retailers = await UserService.getBalatroRetailers();
+        return res.status(200).json({
+            success: true,
+            data: retailers,
+            count: retailers.length,
+        });
+    } catch (error) {
+        console.error(`Error in getBalatroRetailers: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: 'Internal server error',
+        });
+    }
+};
+
 const getUsers = async (req: Request, res: Response) => {
     try{
         const userId = req.user?._id;
@@ -858,6 +881,7 @@ export {
     getAllSuperDistributors,
     getDistributors,
     getRetailers,
+    getBalatroRetailers,
     getUsers,
     getStats,
 
@@ -891,4 +915,51 @@ export {
     getSuperDistributorsForHierarchy,
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
+
+    // Entitlement endpoints
+    updateUserEntitlements,
 };
+
+// ============ ENTITLEMENT ENDPOINTS ============
+
+async function updateUserEntitlements(req: Request, res: Response) {
+    try {
+        if (req.user?.role !== 'admin') {
+            return res.status(403).json({ success: false, message: 'Admin only' });
+        }
+
+        const { id } = req.params;
+        const { entitlements, machine_quota } = req.body;
+
+        const validEntitlements = ['balatro'];
+        if (entitlements !== undefined) {
+            if (!Array.isArray(entitlements) || entitlements.some((e: any) => !validEntitlements.includes(e))) {
+                return res.status(400).json({
+                    success: false,
+                    message: `entitlements must be an array containing valid values: ${validEntitlements.join(', ')}`
+                });
+            }
+        }
+        if (machine_quota !== undefined) {
+            if (typeof machine_quota !== 'number' || machine_quota < 0 || !Number.isInteger(machine_quota)) {
+                return res.status(400).json({ success: false, message: 'machine_quota must be a non-negative integer' });
+            }
+        }
+
+        const targetUser = await User.findById(id);
+        if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
+        if (targetUser.role !== 'retailer') {
+            return res.status(400).json({ success: false, message: 'Entitlements can only be set on retailer accounts' });
+        }
+
+        const updates: any = {};
+        if (entitlements !== undefined) updates.entitlements = entitlements;
+        if (machine_quota !== undefined) updates.machine_quota = machine_quota;
+
+        const updated = await User.findByIdAndUpdate(id, updates, { new: true }).select('-password');
+        return res.status(200).json({ success: true, data: updated });
+    } catch (err) {
+        console.error('updateUserEntitlements error:', err);
+        return res.status(500).json({ success: false, message: 'Internal server error' });
+    }
+}

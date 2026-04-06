@@ -40,6 +40,10 @@ export interface IUser extends Document {
   // Hierarchy Management
   totalSubordinates: number; // Count of direct children
 
+  // Arcade Machine entitlements
+  entitlements: string[];
+  machine_quota: number;
+
   // Timestamps
   createdAt: Date;
   updatedAt: Date;
@@ -178,6 +182,16 @@ const userSchema = new Schema<IUser>({
 
   // Hierarchy Management
   totalSubordinates: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Arcade Machine entitlements
+  entitlements: {
+    type: [String],
+    default: []
+  },
+  machine_quota: {
     type: Number,
     default: 0,
     min: 0

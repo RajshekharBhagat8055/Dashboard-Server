@@ -112,6 +112,8 @@ const login = async (req: Request, res: Response) => {
           creditBalance: user.creditBalance,
           isOnline: true,
           lastLogin: user.lastLogin,
+          entitlements: user.entitlements,
+          machine_quota: user.machine_quota,
           // Hierarchy fields
           superDistributorId: user.superDistributorId,
           distributorId: user.distributorId,
@@ -320,6 +322,8 @@ const getProfile = async (req: Request, res: Response) => {
           lastActivity: user.lastActivity,
           createdAt: user.createdAt,
           updatedAt: user.updatedAt,
+          entitlements: user.entitlements,
+          machine_quota: user.machine_quota,
           // Hierarchy fields
           superDistributorId: user.superDistributorId,
           distributorId: user.distributorId,
@@ -425,7 +429,9 @@ const createUser = async (req: Request, res: Response) => {
       createdBy,
       superDistributorId,
       distributorId,
-      retailerId
+      retailerId,
+      entitlements,
+      machine_quota,
     } = req.body;
 
     // Validate required fields
@@ -459,6 +465,14 @@ const createUser = async (req: Request, res: Response) => {
       return res.status(403).json({
         success: false,
         message: `${creatorRole} cannot create ${role} role`
+      });
+    }
+
+    const creatorDoc = await User.findById(req.user!._id).select('role entitlements');
+    if (creatorDoc?.role === 'retailer' && creatorDoc.entitlements?.includes('balatro') && role === 'user') {
+      return res.status(403).json({
+        success: false,
+        message: 'Balatro retailers cannot create end users',
       });
     }
 
@@ -532,6 +546,31 @@ const createUser = async (req: Request, res: Response) => {
       parentId = req.user?._id; // Admin is parent
     }
 
+    const validBalatroEntitlements = ['balatro'];
+    let retailerEntitlements: string[] | undefined = undefined;
+    let retailerMachineQuota: number | undefined = undefined;
+
+    if (role === 'retailer') {
+      if (entitlements !== undefined) {
+        if (!Array.isArray(entitlements) || entitlements.some((e: string) => !validBalatroEntitlements.includes(e))) {
+          return res.status(400).json({
+            success: false,
+            message: `For retailers, entitlements may only include: ${validBalatroEntitlements.join(', ')}`,
+          });
+        }
+        retailerEntitlements = entitlements;
+      }
+      if (machine_quota !== undefined && machine_quota !== null) {
+        if (typeof machine_quota !== 'number' || !Number.isInteger(machine_quota) || machine_quota < 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'machine_quota must be a non-negative integer',
+          });
+        }
+        retailerMachineQuota = machine_quota;
+      }
+    }
+
     // Create new user with hierarchy chain
     const newUser = new User({
       username: username.toLowerCase(),
@@ -546,7 +585,9 @@ const createUser = async (req: Request, res: Response) => {
       parentId,
       superDistributorId: hierarchyChain.superDistributorId,
       distributorId: hierarchyChain.distributorId,
-      retailerId: hierarchyChain.retailerId
+      retailerId: hierarchyChain.retailerId,
+      ...(retailerEntitlements !== undefined ? { entitlements: retailerEntitlements } : {}),
+      ...(retailerMachineQuota !== undefined ? { machine_quota: retailerMachineQuota } : {}),
     });
 
     // Hash password
@@ -569,6 +610,8 @@ const createUser = async (req: Request, res: Response) => {
           superDistributorId: newUser.superDistributorId,
           distributorId: newUser.distributorId,
           retailerId: newUser.retailerId,
+          entitlements: newUser.entitlements,
+          machine_quota: newUser.machine_quota,
           createdAt: newUser.createdAt
         }
       }

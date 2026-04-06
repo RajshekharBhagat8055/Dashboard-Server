@@ -6,6 +6,7 @@ import {
     getAllSuperDistributors,
     getDistributors,
     getRetailers,
+    getBalatroRetailers,
     getUsers,
     getStats,
 
@@ -39,6 +40,9 @@ import {
     getSuperDistributorsForHierarchy,
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
+
+    // Entitlement endpoints
+    updateUserEntitlements,
 } from "../controllers/user.controller";
 
 const userRouter = Router();
@@ -51,6 +55,9 @@ userRouter.use(logAction);
 // ============ ADMIN ENDPOINTS (admin sees everything) ============
 userRouter.get('/super-distributors', getAllSuperDistributors); // Admin only
 userRouter.get('/distributors', getDistributors); // Admin or Super Distributor
+// Register before /retailers so paths like /retailers/balatro are not shadowed
+userRouter.get('/retailers/balatro', getBalatroRetailers); // Admin only — Balatro retailers
+userRouter.get('/balatro-retailers', getBalatroRetailers); // alias (same handler)
 userRouter.get('/retailers', getRetailers); // Admin, Super Distributor, or Distributor
 userRouter.get('/users', getUsers); // Admin, Super Distributor, Distributor, or Retailer
 userRouter.get('/stats', getStats); // All roles get their relevant stats
@@ -85,5 +92,8 @@ userRouter.post('/user/:id/transfer-credit', transferCredit); // Transfer credit
 userRouter.post('/user/:id/adjust-credit', adjustCredit); // Adjust credit
 userRouter.post('/user/:id/ban', banUser); // Ban user
 userRouter.post('/user/:id/unban', unBanUser); // Unban user
+
+// ============ ENTITLEMENT ENDPOINTS (admin only) ============
+userRouter.patch('/user/:id/entitlements', updateUserEntitlements);
 
 export default userRouter;

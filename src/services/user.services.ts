@@ -58,18 +58,32 @@ export class UserService {
     }
 
     static async getAllRetailers(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const retailers = await User.find({
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
-        .sort({createdAt: -1})
+        })
+        .select('-password')
+        .sort({ createdAt: -1 })
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
+        return retailers.map((retailer) => ({
             ...retailer,
-            isOnline: retailer.isOnline || false
+            isOnline: retailer.isOnline || false,
+        }));
+    }
+
+    /** Retailers with Balatro entitlement (for admin dashboard). */
+    static async getBalatroRetailers(): Promise<HierarchyUser[]> {
+        const retailers = await User.find({
+            role: 'retailer',
+            entitlements: 'balatro',
+        })
+            .select('-password')
+            .sort({ createdAt: -1 })
+            .lean();
+
+        return retailers.map((retailer) => ({
+            ...retailer,
+            isOnline: retailer.isOnline || false,
         }));
     }
 
@@ -137,7 +151,7 @@ export class UserService {
             superDistributorId: superDistributorId,
             role: 'retailer'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select('-password')
         .sort({createdAt: -1})
         .lean();
 
@@ -243,7 +257,7 @@ export class UserService {
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select('-password')
         .sort({createdAt: -1})
         .lean();
 
