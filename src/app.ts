@@ -9,6 +9,7 @@ import userRouter from './routes/user.route';
 import gameRouter from './routes/game.route';
 import logRouter from './routes/log.route';
 import machineRouter from './routes/machine.route';
+import balatroRouter from './routes/balatro.route';
 
 // Load environment variables
 dotenv.config();
@@ -94,6 +95,7 @@ app.use('/api/users', userRouter);
 app.use('/api/games', gameRouter);
 app.use('/api/logs', logRouter);
 app.use('/api/machines', machineRouter);
+app.use('/api/balatro', balatroRouter);
 
 // 404 handler
 app.use('*', (req: Request, res: Response) => {
