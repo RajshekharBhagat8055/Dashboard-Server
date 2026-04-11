@@ -40,6 +40,10 @@ const connectDB = async(): Promise<void> => {
         console.log(`Connecting to database: ${dbName}`);
         await mongoose.connect(connectionUri);
         console.log(`✅ Connected to MongoDB database: ${dbName}`);
+        const ticketsDb = process.env.TICKETS_DB_NAME;
+        if (ticketsDb && ticketsDb !== dbName) {
+          console.log(`📎 Reports will read tickets from database: ${ticketsDb} (useDb)`);
+        }
     } catch( error : any) {
         console.error(`MongoDB connection error:${error.message}`);
         process.exit(1);
