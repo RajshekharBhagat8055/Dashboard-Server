@@ -4,19 +4,16 @@ import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
 import dotenv from 'dotenv';
 import authRouter from './routes/auth.router';
-import { connectDB } from './config/connectDB';
 import userRouter from './routes/user.route';
 import gameRouter from './routes/game.route';
 import logRouter from './routes/log.route';
+import reportRouter from './routes/report.route';
 
 // Load environment variables
 dotenv.config();
 
 export const app = express();
 export const PORT = process.env.PORT || 3000;
-
-// Connect to database
-connectDB();
 
 // Security middleware
 app.use(helmet());
@@ -99,6 +96,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/users', userRouter);
 app.use('/api/games', gameRouter);
 app.use('/api/logs', logRouter);
+app.use('/api/reports', reportRouter);
 
 // 404 handler
 app.use('*', (req: Request, res: Response) => {
