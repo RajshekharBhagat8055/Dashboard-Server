@@ -44,13 +44,20 @@ const corsOptions = {
     allowedOrigins.push(
       'https://arka-dashboard-hub.vercel.app', // Your Vercel frontend
       /^https:\/\/arka-dashboard-hub.*\.vercel\.app$/, // Vercel preview deployments
-      'https://dashboard-server-s25r.onrender.com' // Your current Render backend URL
+      'https://dashboard-server-s25r.onrender.com', // Your current Render backend URL
+      'https://lstar.online',
+      'https://www.lstar.online',
+      'https://72.60.220.10'
     );
 
     // Add FRONTEND_URL from environment variable if set
     if (process.env.FRONTEND_URL) {
       allowedOrigins.push(process.env.FRONTEND_URL);
       console.log('Added FRONTEND_URL to CORS origins:', process.env.FRONTEND_URL);
+    }
+    if (process.env.ADMIN_FRONTEND_URL) {
+      allowedOrigins.push(process.env.ADMIN_FRONTEND_URL);
+      console.log('Added ADMIN_FRONTEND_URL to CORS origins:', process.env.ADMIN_FRONTEND_URL);
     }
 
     // Check if the origin matches any allowed pattern
@@ -70,10 +77,13 @@ const corsOptions = {
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 };
 
 app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 // Cookie parsing middleware
 app.use(cookieParser());
