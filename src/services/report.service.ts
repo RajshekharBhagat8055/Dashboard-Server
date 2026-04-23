@@ -279,7 +279,7 @@ export class ReportService {
     const userIds = ticketAgg.map((t) => t._id);
     const users = await User.find({ _id: { $in: userIds } })
       .select(
-        '_id username uniqueId role superDistributorId distributorId retailerId'
+        '_id username uniqueId role commissionRate superDistributorId distributorId retailerId'
       )
       .lean();
     const userMap = new Map(users.map((u) => [String(u._id), u]));
@@ -309,7 +309,12 @@ export class ReportService {
       const unclaim = t.unclaimPoints ?? 0;
       const endAmount = play - win;
 
-      const retailerRate = u?.retailerId ? rateMap.get(String(u.retailerId)) ?? 0 : 0;
+      const retailerRate =
+        u?.role === 'retailer'
+          ? (u as any).commissionRate ?? 0
+          : u?.retailerId
+            ? rateMap.get(String(u.retailerId)) ?? 0
+            : 0;
       const distributorRate = u?.distributorId ? rateMap.get(String(u.distributorId)) ?? 0 : 0;
       const superRate = u?.superDistributorId ? rateMap.get(String(u.superDistributorId)) ?? 0 : 0;
 
