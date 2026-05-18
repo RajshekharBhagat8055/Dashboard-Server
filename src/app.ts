@@ -102,7 +102,7 @@ app.use('/api/games', gameRouter);
 app.use('/api/logs', logRouter);
 app.use('/api/reports', reportRouter);
 console.log(
-  '[api] Report routes mounted at /api/reports (turnover, transactions, commission, admin-commission, delete-range)'
+  '[api] Report routes mounted at /api/reports (turnover, transactions, commission, admin-commission, game-history, delete-range)'
 );
 
 // 404 handler

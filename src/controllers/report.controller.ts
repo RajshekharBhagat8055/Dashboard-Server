@@ -136,6 +136,40 @@ export const getCommissionPayoutReport = async (req: Request, res: Response) => 
   }
 };
 
+export const getGameHistory = async (req: Request, res: Response) => {
+  try {
+    if (!req.user?._id) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied - Admin only'
+      });
+    }
+
+    const gameTypeRaw = typeof req.query.game_type === 'string' ? req.query.game_type.trim().toLowerCase() : '';
+    const gameType =
+      gameTypeRaw === '2d' || gameTypeRaw === '3d' ? (gameTypeRaw as '2d' | '3d') : undefined;
+    const username =
+      typeof req.query.username === 'string' && req.query.username.trim()
+        ? req.query.username.trim()
+        : undefined;
+    const limitRaw = parseInt(String(req.query.limit ?? '500'), 10);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 500;
+
+    const result = await ReportService.getGameHistory(
+      { _id: req.user._id, role: req.user.role },
+      parseTicketDateRange(req),
+      { gameType, username, limit }
+    );
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Error in getGameHistory:', error);
+    return res.status(500).json({ success: false, message: 'Internal server error' });
+  }
+};
+
 export const getAdminCommissionReport = async (req: Request, res: Response) => {
   try {
     if (!req.user?._id) {
@@ -172,7 +206,7 @@ export const postReportDeleteRange = async (req: Request, res: Response) => {
     const to = body.to;
     const confirmToken = body.confirmToken;
 
-    if (target !== 'turnover') {
+    if (target !== 'turnover' && target !== 'history') {
       return res.status(400).json({ success: false, message: 'Unsupported target' });
     }
     if (typeof from !== 'string' || typeof to !== 'string') {
@@ -184,7 +218,10 @@ export const postReportDeleteRange = async (req: Request, res: Response) => {
     }
 
     if (mode === 'preview') {
-      const r = await ReportService.previewDeleteTurnoverTickets(from, to);
+      const r =
+        target === 'history'
+          ? await ReportService.previewDeleteHistoryTickets(from, to)
+          : await ReportService.previewDeleteTurnoverTickets(from, to);
       return res.status(200).json({
         success: true,
         data: {
@@ -200,7 +237,10 @@ export const postReportDeleteRange = async (req: Request, res: Response) => {
         return res.status(400).json({ success: false, message: 'confirmToken is required' });
       }
       try {
-        const r = await ReportService.confirmDeleteTurnoverTickets(from, to, confirmToken);
+        const r =
+          target === 'history'
+            ? await ReportService.confirmDeleteHistoryTickets(from, to, confirmToken)
+            : await ReportService.confirmDeleteTurnoverTickets(from, to, confirmToken);
         return res.status(200).json({
           success: true,
           data: { deletedCount: r.deletedCount, message: r.message }

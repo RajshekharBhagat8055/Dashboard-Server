@@ -5,6 +5,7 @@ import {
   getTransactionReport,
   getCommissionPayoutReport,
   getAdminCommissionReport,
+  getGameHistory,
   postReportDeleteRange
 } from '../controllers/report.controller';
 
@@ -14,6 +15,7 @@ reportRouter.get('/turnover', getTurnoverReport);
 reportRouter.get('/transactions', getTransactionReport);
 reportRouter.get('/commission', getCommissionPayoutReport);
 reportRouter.get('/admin-commission', getAdminCommissionReport);
+reportRouter.get('/game-history', getGameHistory);
 reportRouter.post('/delete-range', postReportDeleteRange);
 
 export default reportRouter;

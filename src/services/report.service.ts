@@ -624,6 +624,82 @@ export class ReportService {
       .then((docs) => docs.map((d) => d._id as mongoose.Types.ObjectId));
   }
 
+  private static ticketHistoryStatus(ticket: {
+    status: string;
+    winPoint?: number;
+    claimed?: boolean;
+  }): 'win' | 'loss' | 'claimed' | 'not claim' | 'No Result Declare' {
+    if (ticket.status === 'result_pending') return 'No Result Declare';
+    const win = ticket.winPoint ?? 0;
+    if (win > 0) return ticket.claimed ? 'claimed' : 'not claim';
+    return 'loss';
+  }
+
+  /** Per-ticket bet history (sai-lucky game-history shape, Skill Game tickets). */
+  static async getGameHistory(
+    currentUser: ReportCurrentUser,
+    range?: ReportDateRange,
+    opts?: { gameType?: '2d' | '3d'; username?: string; limit?: number }
+  ) {
+    const playerIds = await this.getScopedPlayerIds(currentUser);
+    if (playerIds.length === 0) {
+      return {
+        success: true as const,
+        data: { rows: [] as Record<string, unknown>[] },
+        generatedAt: new Date().toISOString()
+      };
+    }
+
+    const match = this.buildTicketMatch(playerIds, range);
+    if (opts?.gameType) {
+      match.gameType = opts.gameType;
+    }
+    if (opts?.username?.trim()) {
+      match.username = opts.username.trim();
+    }
+
+    const limit = Math.min(1000, Math.max(1, opts?.limit ?? 500));
+
+    const tickets = await getTicketModel()
+      .find(match)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    const rows = tickets.map((t) => {
+      const playPoint = t.totalPoint ?? 0;
+      const wonPoint = t.winPoint ?? 0;
+      const hasResult = t.status !== 'result_pending';
+      return {
+        created_at: t.createdAt ? new Date(t.createdAt).toISOString() : null,
+        username: t.username ?? '',
+        game_type: t.gameType ?? '2d',
+        game_id: t.gameId ?? '',
+        ticket_id: t.barcode ?? String(t._id),
+        play_point: playPoint,
+        won_point: wonPoint,
+        end_point: playPoint - wonPoint,
+        draw_date: t.drawDate ?? '',
+        draw_time: t.drawTime ?? '',
+        coupon_time: t.couponTime ?? '',
+        game_result: hasResult ? `${t.drawDate ?? ''} ${t.drawTime ?? ''}`.trim() : null,
+        status: this.ticketHistoryStatus(t),
+        items: (t.items ?? []).map((item) => ({
+          label: item.label,
+          amount: item.amount,
+          series_key: item.seriesKey,
+          series_letter: item.seriesLetter
+        }))
+      };
+    });
+
+    return {
+      success: true as const,
+      data: { rows },
+      generatedAt: new Date().toISOString()
+    };
+  }
+
   static async previewDeleteTurnoverTickets(fromYmd: string, toYmd: string) {
     const start = new Date(`${fromYmd}T00:00:00.000`);
     const end = new Date(`${toYmd}T23:59:59.999`);
@@ -687,6 +763,72 @@ export class ReportService {
     return {
       deletedCount: res.deletedCount ?? 0,
       message: `Deleted ${res.deletedCount ?? 0} ticket record(s).`
+    };
+  }
+
+  static async previewDeleteHistoryTickets(fromYmd: string, toYmd: string) {
+    const start = new Date(`${fromYmd}T00:00:00.000`);
+    const end = new Date(`${toYmd}T23:59:59.999`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+      throw new Error('Invalid date range');
+    }
+    const playerIds = await this.adminPlayerIdsForDelete();
+    if (playerIds.length === 0) {
+      return { previewCount: 0, confirmToken: '', message: 'No player scope' };
+    }
+    const match = this.buildTicketMatch(playerIds, { start, end });
+    const previewCount = await getTicketModel().countDocuments(match);
+    const confirmToken =
+      previewCount > 0
+        ? jwt.sign(
+            {
+              purpose: 'history_ticket_delete' as const,
+              from: fromYmd,
+              to: toYmd
+            },
+            REPORT_DELETE_JWT_SECRET,
+            { expiresIn: '15m' }
+          )
+        : '';
+    return {
+      previewCount,
+      confirmToken,
+      message:
+        previewCount > 0
+          ? `Ready to delete ${previewCount} game history record(s) in range.`
+          : 'No records in selected range.'
+    };
+  }
+
+  static async confirmDeleteHistoryTickets(fromYmd: string, toYmd: string, confirmToken: string) {
+    let decoded: jwt.JwtPayload & { purpose?: string; from?: string; to?: string };
+    try {
+      decoded = jwt.verify(confirmToken, REPORT_DELETE_JWT_SECRET) as jwt.JwtPayload & {
+        purpose?: string;
+        from?: string;
+        to?: string;
+      };
+    } catch {
+      throw new Error('Invalid or expired confirmation token');
+    }
+    if (
+      decoded.purpose !== 'history_ticket_delete' ||
+      decoded.from !== fromYmd ||
+      decoded.to !== toYmd
+    ) {
+      throw new Error('Confirmation token does not match this delete request');
+    }
+    const start = new Date(`${fromYmd}T00:00:00.000`);
+    const end = new Date(`${toYmd}T23:59:59.999`);
+    const playerIds = await this.adminPlayerIdsForDelete();
+    if (playerIds.length === 0) {
+      return { deletedCount: 0, message: 'No records deleted' };
+    }
+    const match = this.buildTicketMatch(playerIds, { start, end });
+    const res = await getTicketModel().deleteMany(match);
+    return {
+      deletedCount: res.deletedCount ?? 0,
+      message: `Deleted ${res.deletedCount ?? 0} game history record(s).`
     };
   }
 }
