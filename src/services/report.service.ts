@@ -350,4 +350,266 @@ export class ReportService {
 
     return { rows: filteredRows, totals };
   }
+
+  static deriveTicketHistoryStatus(ticket: {
+    status?: string;
+    winPoint?: number;
+    claimed?: boolean;
+  }): 'claimed' | 'not claim' | 'loss' | 'No Result Declare' {
+    if (ticket.status === 'cancelled') return 'loss';
+    if (ticket.status === 'result_pending') return 'No Result Declare';
+    const win = Number(ticket.winPoint || 0);
+    if (win > 0) return ticket.claimed ? 'claimed' : 'not claim';
+    return 'loss';
+  }
+
+  private static makeDeleteConfirmToken(payload: {
+    target: string;
+    from: string;
+    to: string;
+    count: number;
+  }): string {
+    return Buffer.from(JSON.stringify(payload)).toString('base64');
+  }
+
+  static async getGameHistoryReport(
+    currentUser: AuthUser,
+    dateFilter: ReportDateFilter,
+    options: {
+      gameType?: string;
+      username?: string;
+      search?: string;
+      exactDate?: string;
+      limit?: number;
+    },
+  ) {
+    const { scopedTicketUserIds } = await getScopedUsers(currentUser);
+    if (!scopedTicketUserIds.length) {
+      return { rows: [] as Array<Record<string, unknown>> };
+    }
+
+    const matchStage: Record<string, unknown> = {
+      userId: { $in: scopedTicketUserIds },
+    };
+
+    if (options.exactDate && /^\d{4}-\d{2}-\d{2}$/.test(options.exactDate)) {
+      const from = new Date(`${options.exactDate}T00:00:00`);
+      const to = new Date(`${options.exactDate}T23:59:59.999`);
+      matchStage.createdAt = { $gte: from, $lte: to };
+    } else {
+      const createdAtFilter = buildCreatedAtFilter(dateFilter);
+      if (createdAtFilter) matchStage.createdAt = createdAtFilter;
+    }
+
+    const normalizedGameType = options.gameType?.trim().toLowerCase();
+    if (normalizedGameType && normalizedGameType !== 'all') {
+      matchStage.gameType = normalizedGameType;
+    }
+
+    if (options.username?.trim()) {
+      matchStage.username = options.username.trim();
+    }
+
+    const limit = Math.min(500, Math.max(1, options.limit ?? 500));
+    const ticketCollection = getSkillGameDb().collection('tickets');
+    const tickets = await ticketCollection.find(matchStage)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .toArray();
+
+    const resultCollection = getSkillGameDb().collection('results');
+    const slotKeys = new Set<string>();
+    for (const ticket of tickets) {
+      if (ticket.status === 'result_pending') continue;
+      const drawDate = String(ticket.drawDate || '');
+      const drawTime = String(ticket.drawTime || '');
+      if (drawDate && drawTime) slotKeys.add(`${drawDate}|${drawTime}`);
+    }
+
+    const gameTypeBySlot = new Map<string, string>();
+    for (const ticket of tickets) {
+      const drawDate = String(ticket.drawDate || '');
+      const drawTime = String(ticket.drawTime || '');
+      if (!drawDate || !drawTime) continue;
+      const key = `${drawDate}|${drawTime}`;
+      if (!gameTypeBySlot.has(key)) {
+        gameTypeBySlot.set(key, String(ticket.gameType || '2d'));
+      }
+    }
+
+    const resultBySlot = new Map<string, string>();
+    await Promise.all(
+      Array.from(slotKeys).map(async (key) => {
+        const [drawDate, drawTime] = key.split('|');
+        const dateStart = new Date(`${drawDate}T00:00:00`);
+        const dateEnd = new Date(`${drawDate}T23:59:59.999`);
+        const resultDoc = await resultCollection.findOne({
+          time: drawTime,
+          date: { $gte: dateStart, $lte: dateEnd },
+          isPublished: true,
+        });
+        if (!resultDoc) {
+          resultBySlot.set(key, `${drawDate} ${drawTime}`);
+          return;
+        }
+        const gameType = gameTypeBySlot.get(key) || '2d';
+        if (gameType === '3d' && resultDoc.results3D) {
+          const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
+          resultBySlot.set(key, `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`);
+          return;
+        }
+        const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
+        const first = filters[0] as { columns?: string[] } | undefined;
+        const sample = first?.columns?.[0];
+        resultBySlot.set(key, sample ? `${drawTime} · ${sample}` : `${drawDate} ${drawTime}`);
+      }),
+    );
+
+    const normalizedSearch = options.search?.trim().toLowerCase();
+    const rows = tickets.map((ticket) => {
+      const playPoint = Number(ticket.totalPoint || 0);
+      const wonPoint = Number(ticket.winPoint || 0);
+      const drawDate = String(ticket.drawDate || '');
+      const drawTime = String(ticket.drawTime || '');
+      const slotKey = drawDate && drawTime ? `${drawDate}|${drawTime}` : '';
+      const status = ReportService.deriveTicketHistoryStatus({
+        status: ticket.status as string | undefined,
+        winPoint: ticket.winPoint as number | undefined,
+        claimed: ticket.claimed as boolean | undefined,
+      });
+      const gameResult =
+        status === 'No Result Declare'
+          ? null
+          : (slotKey ? resultBySlot.get(slotKey) ?? `${drawDate} ${drawTime}` : null);
+
+      return {
+        id: ticket._id.toString(),
+        createdAt: ticket.createdAt,
+        username: String(ticket.username || ''),
+        gameType: String(ticket.gameType || '2d'),
+        gameId: String(ticket.gameId || ''),
+        ticketId: ticket._id.toString(),
+        barcode: String(ticket.barcode || ''),
+        drawDate,
+        drawTime,
+        playPoint,
+        wonPoint,
+        endPoint: playPoint - wonPoint,
+        gameResult,
+        status,
+        items: Array.isArray(ticket.items)
+          ? ticket.items.map((item: Record<string, unknown>) => ({
+            label: String(item.label || ''),
+            amount: Number(item.amount || 0),
+            seriesKey: String(item.seriesKey || ''),
+            seriesLetter: String(item.seriesLetter || ''),
+            format: item.format ? String(item.format) : undefined,
+          }))
+          : [],
+      };
+    }).filter((row) => {
+      if (!normalizedSearch) return true;
+      const hay = [
+        row.username,
+        row.gameType,
+        row.gameId,
+        row.ticketId,
+        row.barcode,
+        row.status,
+        row.drawDate,
+        row.drawTime,
+        row.gameResult,
+        String(row.playPoint),
+        String(row.wonPoint),
+        String(row.endPoint),
+      ]
+        .join(' ')
+        .toLowerCase();
+      return hay.includes(normalizedSearch);
+    });
+
+    return { rows };
+  }
+
+  static async previewDeleteGameHistory(
+    currentUser: AuthUser,
+    from: string,
+    to: string,
+  ) {
+    if (currentUser.role !== 'admin') {
+      throw new Error('Access denied - Admin only');
+    }
+
+    const fromDate = new Date(`${from}T00:00:00`);
+    const toDate = new Date(`${to}T23:59:59.999`);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw new Error('Invalid date range');
+    }
+
+    const ticketCollection = getSkillGameDb().collection('tickets');
+    const previewCount = await ticketCollection.countDocuments({
+      createdAt: { $gte: fromDate, $lte: toDate },
+    });
+
+    const confirmToken = ReportService.makeDeleteConfirmToken({
+      target: 'history',
+      from,
+      to,
+      count: previewCount,
+    });
+
+    return {
+      previewCount,
+      confirmToken,
+      message:
+        previewCount > 0
+          ? `This will delete ${previewCount} ticket records.`
+          : 'No records found for this range.',
+    };
+  }
+
+  static async confirmDeleteGameHistory(
+    currentUser: AuthUser,
+    from: string,
+    to: string,
+    confirmToken: string,
+  ) {
+    if (currentUser.role !== 'admin') {
+      throw new Error('Access denied - Admin only');
+    }
+
+    const fromDate = new Date(`${from}T00:00:00`);
+    const toDate = new Date(`${to}T23:59:59.999`);
+    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+      throw new Error('Invalid date range');
+    }
+
+    const ticketCollection = getSkillGameDb().collection('tickets');
+    const previewCount = await ticketCollection.countDocuments({
+      createdAt: { $gte: fromDate, $lte: toDate },
+    });
+
+    const expectedToken = ReportService.makeDeleteConfirmToken({
+      target: 'history',
+      from,
+      to,
+      count: previewCount,
+    });
+
+    if (!confirmToken || confirmToken !== expectedToken) {
+      throw new Error('Confirmation required. Please preview again and confirm with the latest token.');
+    }
+
+    const deleteResult = await ticketCollection.deleteMany({
+      createdAt: { $gte: fromDate, $lte: toDate },
+    });
+
+    return {
+      deletedCount: deleteResult.deletedCount ?? 0,
+      message:
+        (deleteResult.deletedCount ?? 0) > 0
+          ? `Deleted ${deleteResult.deletedCount} ticket records.`
+          : 'No records deleted for this range.',
+    };
+  }
 }

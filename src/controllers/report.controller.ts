@@ -104,9 +104,80 @@ const getAdminCommissionReport = async (req: Request, res: Response) => {
   }
 };
 
+const getGameHistoryReport = async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const data = await ReportService.getGameHistoryReport(
+      { _id: req.user._id, role: req.user.role as any },
+      parseDateFilter(req),
+      {
+        gameType: req.query.gameType as string | undefined,
+        username: req.query.username as string | undefined,
+        search: req.query.search as string | undefined,
+        exactDate: req.query.exactDate as string | undefined,
+        limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+      },
+    );
+
+    return res.status(200).json({ success: true, data });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: error.message || 'Internal server error' });
+  }
+};
+
+const postDeleteGameHistoryRange = async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ success: false, message: 'Authentication required' });
+    }
+
+    const mode = String(req.body.mode || 'preview').trim();
+    const from = String(req.body.from || '').trim();
+    const to = String(req.body.to || '').trim();
+    const confirmToken = String(req.body.confirmToken || '').trim();
+
+    if (!from || !to) {
+      return res.status(400).json({ success: false, message: 'from and to are required' });
+    }
+
+    if (mode === 'preview') {
+      const data = await ReportService.previewDeleteGameHistory(
+        { _id: req.user._id, role: req.user.role as any },
+        from,
+        to,
+      );
+      return res.status(200).json({ success: true, data });
+    }
+
+    if (mode === 'delete') {
+      const data = await ReportService.confirmDeleteGameHistory(
+        { _id: req.user._id, role: req.user.role as any },
+        from,
+        to,
+        confirmToken,
+      );
+      return res.status(200).json({ success: true, data });
+    }
+
+    return res.status(400).json({ success: false, message: 'Invalid mode' });
+  } catch (error: any) {
+    const status = error.message?.includes('Admin only')
+      ? 403
+      : error.message?.includes('Confirmation required')
+        ? 409
+        : 500;
+    return res.status(status).json({ success: false, message: error.message || 'Internal server error' });
+  }
+};
+
 export {
   getTurnoverReport,
   getTransactionsReport,
   getCommissionPayoutReport,
   getAdminCommissionReport,
+  getGameHistoryReport,
+  postDeleteGameHistoryRange,
 };
