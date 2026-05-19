@@ -36,7 +36,7 @@ export class UserService {
     static async getAllSuperDistributors(): Promise<HierarchyUser[]> {
         return await User.find({
             role: "super_distributor",
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role commissionRate')
         .sort({createdAt: -1})
         .lean();
     }
@@ -118,7 +118,7 @@ export class UserService {
         const distributors = await User.find({
             superDistributorId: superDistributorId,
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
         .sort({createdAt: -1})
         .lean();
 
@@ -243,7 +243,7 @@ export class UserService {
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
         .sort({createdAt: -1})
         .lean();
 
@@ -654,6 +654,19 @@ export class UserService {
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
+        }
+
+        // Validate commission rate does not exceed parent's commission
+        if (updates.commissionRate !== undefined && updates.commissionRate !== null) {
+            const parentId = targetUser.parentId;
+            if (parentId) {
+                const parentUser = await User.findById(parentId).select('commissionRate username');
+                if (parentUser && (updates.commissionRate as number) > parentUser.commissionRate) {
+                    const error = new Error(`Commission rate cannot exceed parent's commission of ${parentUser.commissionRate}%`);
+                    (error as any).status = 400;
+                    throw error;
+                }
+            }
         }
 
         // Update the user

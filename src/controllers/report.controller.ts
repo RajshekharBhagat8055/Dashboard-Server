@@ -48,12 +48,17 @@ export const getTurnoverReport = async (req: Request, res: Response) => {
     }
     if (blockEndUser(req, res)) return;
 
+    const parentId = typeof req.query.parent_id === 'string' && req.query.parent_id.trim()
+      ? req.query.parent_id.trim()
+      : undefined;
+    const childRole = typeof req.query.child_role === 'string' && req.query.child_role.trim()
+      ? req.query.child_role.trim()
+      : undefined;
+
     const result = await ReportService.getTurnoverReport(
-      {
-        _id: req.user._id,
-        role: req.user.role
-      },
-      parseTicketDateRange(req)
+      { _id: req.user._id, role: req.user.role },
+      parseTicketDateRange(req),
+      { parentId, childRole }
     );
     return res.status(200).json(result);
   } catch (error) {

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import User from "../models/User";
 import { generateTokenPair, verifyRefreshToken, generateAccessToken } from "../utils/jwt";
 import { canCreateRole, validateHierarchyChain, getRequiredHierarchyFields } from "../utils/hierarchy.helper";
+import { findUserByUsername, trimUsername } from "../utils/username";
 import jwt from "jsonwebtoken";
 
 // Login controller
@@ -18,8 +19,8 @@ const login = async (req: Request, res: Response) => {
       });
     }
 
-    // Find user by username
-    const user = await User.findOne({ username: username.toLowerCase() });
+    // Find user by username (case-insensitive; login works with AS1 or as1)
+    const user = await findUserByUsername(username);
 
     if (!user) {
       return res.status(401).json({
@@ -425,7 +426,6 @@ const createUser = async (req: Request, res: Response) => {
       createdBy,
       superDistributorId,
       distributorId,
-      retailerId
     } = req.body;
 
     // Validate required fields
@@ -487,16 +487,6 @@ const createUser = async (req: Request, res: Response) => {
       hierarchyChain.distributorId = distributorId;
     }
 
-    if (requiredFields.includes('retailerId')) {
-      if (!retailerId) {
-        return res.status(400).json({
-          success: false,
-          message: `Retailer is required for creating ${role}`
-        });
-      }
-      hierarchyChain.retailerId = retailerId;
-    }
-
     // Validate the hierarchy chain
     if (requiredFields.length > 0) {
       const validation = await validateHierarchyChain(hierarchyChain, role);
@@ -508,12 +498,32 @@ const createUser = async (req: Request, res: Response) => {
       }
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ username: username.toLowerCase() });
+    // Validate commission does not exceed parent's commission
+    // super_distributor is the top of the commission chain — only the 0-100 range applies
+    if (commissionRate !== undefined && commissionRate !== null && role !== 'super_distributor') {
+      let parentCommissionId: string | undefined;
+      if (role === 'distributor') parentCommissionId = superDistributorId;
+      else if (role === 'retailer' || role === 'user') parentCommissionId = distributorId;
+
+      if (parentCommissionId) {
+        const parentUser = await User.findById(parentCommissionId).select('commissionRate username');
+        if (parentUser && commissionRate > parentUser.commissionRate) {
+          return res.status(400).json({
+            success: false,
+            message: `Commission rate cannot exceed parent's commission of ${parentUser.commissionRate}%`
+          });
+        }
+      }
+    }
+
+    const normalizedUsername = trimUsername(username);
+
+    // Check if user already exists (case-insensitive: SD2 conflicts with sd2)
+    const existingUser = await findUserByUsername(normalizedUsername);
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: "Username already exists"
+        message: `Username "${existingUser.username}" already exists. Usernames are not case-sensitive.`
       });
     }
 
@@ -521,32 +531,30 @@ const createUser = async (req: Request, res: Response) => {
     const uniqueId = (User as any).generateUniqueId(role);
 
     // Determine parentId based on role
+    // Both user and retailer are direct children of distributor
     let parentId;
-    if (role === 'user' && retailerId) {
-      parentId = retailerId;
-    } else if (role === 'retailer' && distributorId) {
+    if ((role === 'user' || role === 'retailer') && distributorId) {
       parentId = distributorId;
     } else if (role === 'distributor' && superDistributorId) {
       parentId = superDistributorId;
     } else if (role === 'super_distributor') {
-      parentId = req.user?._id; // Admin is parent
+      parentId = req.user?._id;
     }
 
     // Create new user with hierarchy chain
     const newUser = new User({
-      username: username.toLowerCase(),
-      password, // Will be hashed by hashPassword method
+      username: normalizedUsername,
+      password,
       email,
       role,
       uniqueId,
       creditBalance: creditBalance || 0,
       commissionRate: commissionRate || 0,
       status: status || 'active',
-      createdBy: createdBy || req.user?._id, // Default to current user if not specified
+      createdBy: createdBy || req.user?._id,
       parentId,
       superDistributorId: hierarchyChain.superDistributorId,
       distributorId: hierarchyChain.distributorId,
-      retailerId: hierarchyChain.retailerId
     });
 
     // Hash password
@@ -574,8 +582,14 @@ const createUser = async (req: Request, res: Response) => {
       }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     console.error("Create user error:", error);
+    if (error?.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: "Username already exists. Usernames are not case-sensitive."
+      });
+    }
     return res.status(500).json({
       success: false,
       message: "Internal server error"

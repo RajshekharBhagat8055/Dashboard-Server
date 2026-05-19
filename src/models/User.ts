@@ -55,7 +55,6 @@ const userSchema = new Schema<IUser>({
   username: {
     type: String,
     required: true,
-    unique: true,
     trim: true,
     minlength: 3,
     maxlength: 50
@@ -186,7 +185,13 @@ const userSchema = new Schema<IUser>({
   timestamps: true
 });
 
-// Additional indexes for performance (username and uniqueId are already indexed via unique: true)
+// Case-insensitive unique username (AS1 and as1 cannot both exist)
+userSchema.index(
+  { username: 1 },
+  { unique: true, collation: { locale: 'en', strength: 2 } }
+);
+
+// Additional indexes for performance (uniqueId is indexed via unique: true on field)
 userSchema.index({ role: 1 });
 userSchema.index({ parentId: 1 });
 userSchema.index({ createdBy: 1 });

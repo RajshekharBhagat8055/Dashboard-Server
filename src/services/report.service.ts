@@ -223,23 +223,145 @@ export class ReportService {
     return players.map((p) => p._id as mongoose.Types.ObjectId);
   }
 
-  /**
-   * Turnover from Ticket documents (2d/3d), aligned with sai-lucky player_bets semantics:
-   * play = sum(totalPoint), win = sum(winPoint), claim = sum(winPoint where claimed),
-   * end = play - win, commissions = play * hierarchy rates, net = end - commissions.
-   */
-  static async getTurnoverReport(currentUser: ReportCurrentUser, range?: ReportDateRange) {
-    const generatedAt = new Date().toISOString();
-    const playerIds = await this.getScopedPlayerIds(currentUser);
-    if (playerIds.length === 0) {
-      return {
-        success: true as const,
-        data: { report: [] as Record<string, unknown>[] },
-        generatedAt
-      };
+  private static async resolveParentRole(parentId: string): Promise<string | null> {
+    const parent = await User.findById(parentId).select('role').lean();
+    return parent?.role ?? null;
+  }
+
+  private static buildChildFilter(
+    parentOid: mongoose.Types.ObjectId,
+    parentRole: string,
+    childRole?: string
+  ): Record<string, unknown> {
+    // Both retailer and user are direct children of distributor (peers)
+    if (parentRole === 'distributor') {
+      const roles = childRole ? [childRole] : ['retailer', 'user'];
+      return { role: { $in: roles }, distributorId: parentOid };
+    }
+    if (parentRole === 'super_distributor') {
+      return childRole
+        ? { role: childRole, superDistributorId: parentOid }
+        : { role: 'distributor', superDistributorId: parentOid };
+    }
+    if (parentRole === 'admin') {
+      return childRole ? { role: childRole } : { role: 'super_distributor' };
+    }
+    // Fallback
+    return childRole ? { role: childRole, parentId: parentOid } : { parentId: parentOid };
+  }
+
+  private static buildDrillDownScopeFilter(
+    currentUser: ReportCurrentUser,
+    parentId?: string,
+    childRole?: string
+  ): Record<string, unknown> | null {
+    const validRoles = ['super_distributor', 'distributor', 'retailer', 'user'];
+    if (childRole && !validRoles.includes(childRole)) return null;
+
+    const { role, _id } = currentUser;
+    const id = this.oid(_id);
+
+    // no parentId: scope to direct children of current user
+    if (!parentId) {
+      if (role === 'admin') {
+        return childRole ? { role: childRole } : { role: 'super_distributor' };
+      }
+      if (role === 'super_distributor') {
+        return childRole
+          ? { role: childRole, superDistributorId: id }
+          : { role: 'distributor', superDistributorId: id };
+      }
+      if (role === 'distributor') {
+        const roles = childRole ? [childRole] : ['retailer', 'user'];
+        return { role: { $in: roles }, distributorId: id };
+      }
+      return null;
     }
 
-    const ticketMatch = this.buildTicketMatch(playerIds, range);
+    // parentId provided — build filter based on parent's role (resolved async, see getTurnoverReport)
+    return null; // resolved in getTurnoverReport via resolveParentRole
+  }
+
+  /**
+   * Turnover from Ticket documents (2d/3d), aligned with sai-lucky player_bets semantics.
+   * Supports hierarchical drill-down via parent_id + child_role.
+   * Returns commission amounts pre-calculated per node (not per player).
+   */
+  static async getTurnoverReport(
+    currentUser: ReportCurrentUser,
+    range?: ReportDateRange,
+    opts?: { parentId?: string; childRole?: string }
+  ) {
+    const generatedAt = new Date().toISOString();
+
+    // Determine the set of "child nodes" to aggregate under
+    let nodeFilter: Record<string, unknown> | null;
+    if (opts?.parentId) {
+      const parentRole = await this.resolveParentRole(opts.parentId);
+      if (!parentRole) {
+        return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+      }
+      nodeFilter = this.buildChildFilter(this.oid(opts.parentId), parentRole, opts?.childRole);
+    } else {
+      nodeFilter = this.buildDrillDownScopeFilter(currentUser, undefined, opts?.childRole);
+    }
+
+    if (!nodeFilter) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
+
+    const childNodes = await User.find(nodeFilter)
+      .select('_id username role commissionRate superDistributorId distributorId retailerId parentId')
+      .lean();
+
+    if (childNodes.length === 0) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
+
+    // For each child node, gather all descendant player ids
+    const childNodeIds = childNodes.map((n) => n._id as mongoose.Types.ObjectId);
+
+    // Players are 'user' or 'retailer' role descendants of these child nodes
+    const allPlayerDocs = await User.find({ role: { $in: ['user', 'retailer'] } })
+      .select('_id role superDistributorId distributorId retailerId parentId')
+      .lean();
+
+    // Map player -> which child node they belong to
+    const playerToChildNode = new Map<string, string>();
+    const childNodeIdStrings = new Set(childNodeIds.map((id) => String(id)));
+
+    for (const player of allPlayerDocs) {
+      // Walk up the hierarchy to find which child node this player belongs to
+      const pId = String(player._id);
+      if (childNodeIdStrings.has(pId)) {
+        playerToChildNode.set(pId, pId);
+        continue;
+      }
+      // Check direct refs first
+      if (player.retailerId && childNodeIdStrings.has(String(player.retailerId))) {
+        playerToChildNode.set(pId, String(player.retailerId));
+        continue;
+      }
+      if (player.distributorId && childNodeIdStrings.has(String(player.distributorId))) {
+        playerToChildNode.set(pId, String(player.distributorId));
+        continue;
+      }
+      if (player.superDistributorId && childNodeIdStrings.has(String(player.superDistributorId))) {
+        playerToChildNode.set(pId, String(player.superDistributorId));
+        continue;
+      }
+      if (player.parentId && childNodeIdStrings.has(String(player.parentId))) {
+        playerToChildNode.set(pId, String(player.parentId));
+        continue;
+      }
+    }
+
+    const scopedPlayerIds = [...playerToChildNode.keys()].map((id) => this.oid(id));
+    if (scopedPlayerIds.length === 0) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
+
+    const ticketMatch = this.buildTicketMatch(scopedPlayerIds, range);
 
     const ticketAgg = await getTicketModel().aggregate<{
       _id: mongoose.Types.ObjectId;
@@ -255,88 +377,98 @@ export class ReportService {
           playPoints: { $sum: '$totalPoint' },
           winPoints: { $sum: '$winPoint' },
           claimPoints: {
-            $sum: {
-              $cond: [{ $and: ['$claimed', { $gt: ['$winPoint', 0] }] }, '$winPoint', 0]
-            }
+            $sum: { $cond: [{ $and: ['$claimed', { $gt: ['$winPoint', 0] }] }, '$winPoint', 0] }
           },
           unclaimPoints: {
             $sum: {
-              $cond: [
-                {
-                  $and: [{ $eq: ['$claimed', false] }, { $gt: ['$winPoint', 0] }]
-                },
-                '$winPoint',
-                0
-              ]
+              $cond: [{ $and: [{ $eq: ['$claimed', false] }, { $gt: ['$winPoint', 0] }] }, '$winPoint', 0]
             }
           }
         }
       },
-      { $match: { playPoints: { $gt: 0 } } },
-      { $sort: { playPoints: -1 } }
+      { $match: { playPoints: { $gt: 0 } } }
     ]);
 
-    const userIds = ticketAgg.map((t) => t._id);
-    const users = await User.find({ _id: { $in: userIds } })
-      .select(
-        '_id username uniqueId role commissionRate superDistributorId distributorId retailerId'
-      )
-      .lean();
-    const userMap = new Map(users.map((u) => [String(u._id), u]));
-
+    // Fetch commission rates for the hierarchy nodes
     const nodeIdSet = new Set<string>();
-    for (const u of users) {
-      if (u.retailerId) nodeIdSet.add(String(u.retailerId));
-      if (u.distributorId) nodeIdSet.add(String(u.distributorId));
-      if (u.superDistributorId) nodeIdSet.add(String(u.superDistributorId));
+    for (const player of allPlayerDocs) {
+      if (player.retailerId) nodeIdSet.add(String(player.retailerId));
+      if (player.distributorId) nodeIdSet.add(String(player.distributorId));
+      if (player.superDistributorId) nodeIdSet.add(String(player.superDistributorId));
     }
-    const nodeIds = [...nodeIdSet].map((id) => this.oid(id));
     const rateMap = new Map<string, number>();
-    if (nodeIds.length > 0) {
-      const nodes = await User.find({ _id: { $in: nodeIds } })
+    if (nodeIdSet.size > 0) {
+      const nodes = await User.find({ _id: { $in: [...nodeIdSet].map((id) => this.oid(id)) } })
         .select('_id commissionRate')
         .lean();
-      for (const n of nodes) {
-        rateMap.set(String(n._id), n.commissionRate ?? 0);
-      }
+      for (const n of nodes) rateMap.set(String(n._id), n.commissionRate ?? 0);
+    }
+    // Also add child nodes themselves
+    for (const n of childNodes) rateMap.set(String(n._id), n.commissionRate ?? 0);
+
+    const playerMap = new Map(allPlayerDocs.map((p) => [String(p._id), p]));
+
+    // Aggregate per child node
+    const playByNode = new Map<string, { play: number; win: number; claim: number; unclaim: number; retailerAmount: number; distributorAmount: number; superAmount: number }>();
+    for (const nodeId of childNodeIds) {
+      playByNode.set(String(nodeId), { play: 0, win: 0, claim: 0, unclaim: 0, retailerAmount: 0, distributorAmount: 0, superAmount: 0 });
     }
 
-    const report = ticketAgg.map((t) => {
-      const u = userMap.get(String(t._id));
+    for (const t of ticketAgg) {
+      const nodeId = playerToChildNode.get(String(t._id));
+      if (!nodeId) continue;
+      const bucket = playByNode.get(nodeId);
+      if (!bucket) continue;
+      const player = playerMap.get(String(t._id));
       const play = t.playPoints ?? 0;
-      const win = t.winPoints ?? 0;
-      const claim = t.claimPoints ?? 0;
-      const unclaim = t.unclaimPoints ?? 0;
-      const endAmount = play - win;
 
-      const retailerRate =
-        u?.role === 'retailer'
-          ? (u as any).commissionRate ?? 0
-          : u?.retailerId
-            ? rateMap.get(String(u.retailerId)) ?? 0
-            : 0;
-      const distributorRate = u?.distributorId ? rateMap.get(String(u.distributorId)) ?? 0 : 0;
-      const superRate = u?.superDistributorId ? rateMap.get(String(u.superDistributorId)) ?? 0 : 0;
+      const retailerRate = player?.role === 'retailer'
+        ? rateMap.get(String(player._id)) ?? 0
+        : (player?.retailerId ? rateMap.get(String(player.retailerId)) ?? 0 : 0);
+      const distributorRate = player?.distributorId ? rateMap.get(String(player.distributorId)) ?? 0 : 0;
+      const superRate = player?.superDistributorId ? rateMap.get(String(player.superDistributorId)) ?? 0 : 0;
 
-      return {
-        id: String(t._id),
-        username: u?.username ?? '',
-        play_amount: play,
-        win_amount: win,
-        claim_amount: claim,
-        unclaim_amount: unclaim,
-        end_amount: endAmount,
-        retailer_commission_rate: retailerRate,
-        distributor_commission_rate: distributorRate,
-        super_commission_rate: superRate
-      };
-    });
+      bucket.play += play;
+      bucket.win += t.winPoints ?? 0;
+      bucket.claim += t.claimPoints ?? 0;
+      bucket.unclaim += t.unclaimPoints ?? 0;
+      bucket.retailerAmount += play * (Math.max(retailerRate, 0) / 100);
+      bucket.distributorAmount += play * (Math.max(distributorRate - retailerRate, 0) / 100);
+      bucket.superAmount += play * (Math.max(superRate - distributorRate, 0) / 100);
+    }
 
-    return {
-      success: true as const,
-      data: { report },
-      generatedAt
-    };
+    const report = childNodes
+      .map((node) => {
+        const bucket = playByNode.get(String(node._id));
+        if (!bucket || bucket.play === 0) return null;
+        const play = bucket.play;
+        const retailerAmount = bucket.retailerAmount;
+        const distributorAmount = bucket.distributorAmount;
+        const superAmount = bucket.superAmount;
+        const retailerRate = play > 0 ? (retailerAmount / play) * 100 : 0;
+        const distributorRate = play > 0 ? (distributorAmount / play) * 100 : 0;
+        const superRate = play > 0 ? (superAmount / play) * 100 : 0;
+        return {
+          id: String(node._id),
+          username: node.username,
+          role: node.role,
+          play_amount: play,
+          win_amount: bucket.win,
+          claim_amount: bucket.claim,
+          unclaim_amount: bucket.unclaim,
+          end_amount: play - bucket.win,
+          retailer_commission_rate: retailerRate,
+          distributor_commission_rate: distributorRate,
+          super_commission_rate: superRate,
+          retailer_commission_amount: retailerAmount,
+          distributor_commission_amount: distributorAmount,
+          super_commission_amount: superAmount
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null)
+      .sort((a, b) => b.play_amount - a.play_amount);
+
+    return { success: true as const, data: { report }, generatedAt };
   }
 
   static async getTransactionReport(
