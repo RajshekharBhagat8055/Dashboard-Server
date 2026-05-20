@@ -28,10 +28,17 @@ const getTurnoverReport = async (req: Request, res: Response) => {
       return res.status(401).json({ success: false, message: 'Authentication required' });
     }
 
+    const parentId = typeof req.query.parent_id === 'string' && req.query.parent_id.trim()
+      ? req.query.parent_id.trim()
+      : undefined;
+    const childRole = typeof req.query.child_role === 'string' && req.query.child_role.trim()
+      ? req.query.child_role.trim()
+      : undefined;
+
     const data = await ReportService.getTurnoverReport(
       { _id: req.user._id, role: req.user.role as any },
       parseDateFilter(req),
-      req.query.search as string | undefined,
+      { search: req.query.search as string | undefined, parentId, childRole },
     );
 
     return res.status(200).json({ success: true, data });

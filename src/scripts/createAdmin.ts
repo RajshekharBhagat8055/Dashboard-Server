@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import User from '../models/User';
+import { findUserByUsername } from '../utils/username';
 
 // Load environment variables
 dotenv.config();
@@ -166,9 +167,7 @@ async function createAdmin(userData: any) {
     console.log(`✅ Connected to MongoDB database: ${dbName}`);
 
     // Check if user already exists
-    const existingUser = await User.findOne({
-      username: userData.username
-    });
+    const existingUser = await findUserByUsername(userData.username);
 
     if (existingUser) {
       console.log('ℹ️  User already exists:');
