@@ -657,7 +657,12 @@ export class UserService {
         }
 
         // Validate commission rate does not exceed parent's commission
-        if (updates.commissionRate !== undefined && updates.commissionRate !== null) {
+        // super_distributor is the top of the commission chain — only 0-100 range applies
+        if (
+            updates.commissionRate !== undefined &&
+            updates.commissionRate !== null &&
+            targetUser.role !== 'super_distributor'
+        ) {
             const parentId = targetUser.parentId;
             if (parentId) {
                 const parentUser = await User.findById(parentId).select('commissionRate username');

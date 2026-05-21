@@ -392,6 +392,8 @@ export class ReportService {
     // Fetch commission rates for the hierarchy nodes
     const nodeIdSet = new Set<string>();
     for (const player of allPlayerDocs) {
+      // Include retailer players themselves so their own commission rate is available
+      if (player.role === 'retailer') nodeIdSet.add(String(player._id));
       if (player.retailerId) nodeIdSet.add(String(player.retailerId));
       if (player.distributorId) nodeIdSet.add(String(player.distributorId));
       if (player.superDistributorId) nodeIdSet.add(String(player.superDistributorId));
@@ -433,8 +435,8 @@ export class ReportService {
       bucket.claim += t.claimPoints ?? 0;
       bucket.unclaim += t.unclaimPoints ?? 0;
       bucket.retailerAmount += play * (Math.max(retailerRate, 0) / 100);
-      bucket.distributorAmount += play * (Math.max(distributorRate - retailerRate, 0) / 100);
-      bucket.superAmount += play * (Math.max(superRate - distributorRate, 0) / 100);
+      bucket.distributorAmount += play * (Math.max(distributorRate, 0) / 100);
+      bucket.superAmount += play * (Math.max(superRate, 0) / 100);
     }
 
     const report = childNodes
