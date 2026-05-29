@@ -5,6 +5,7 @@ import {
   type ReportDateRange
 } from '../services/report.service';
 import type { LogAction } from '../models/log.model';
+import { parseReportYmdRange } from '../utils/reportDateRange';
 
 const FINANCIAL_ACTIONS = new Set<LogAction>([
   'CREDIT_TRANSFER',
@@ -23,22 +24,8 @@ const blockEndUser = (req: Request, res: Response): boolean => {
   return false;
 };
 
-function parseOptionalQueryDate(v: unknown): Date | undefined {
-  if (v === undefined || v === null) return undefined;
-  const s = String(v).trim();
-  if (!s) return undefined;
-  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s) ? s.replace(' ', 'T') : s;
-  const d = new Date(normalized);
-  return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
 function parseTicketDateRange(req: Request): ReportDateRange | undefined {
-  const start =
-    parseOptionalQueryDate(req.query.from_date) ?? parseOptionalQueryDate(req.query.startDate);
-  const end =
-    parseOptionalQueryDate(req.query.to_date) ?? parseOptionalQueryDate(req.query.endDate);
-  if (!start && !end) return undefined;
-  return { start, end };
+  return parseReportYmdRange(req.query);
 }
 
 export const getTurnoverReport = async (req: Request, res: Response) => {
@@ -78,17 +65,9 @@ export const getTransactionReport = async (req: Request, res: Response) => {
     const limit = Math.min(100, Math.max(1, parseInt(String(req.query.limit ?? '25'), 10) || 25));
 
     const q: TransactionReportQuery = { page, limit };
-
-    if (req.query.from_date) {
-      q.startDate = new Date(String(req.query.from_date));
-    } else if (req.query.startDate) {
-      q.startDate = new Date(String(req.query.startDate));
-    }
-    if (req.query.to_date) {
-      q.endDate = new Date(String(req.query.to_date));
-    } else if (req.query.endDate) {
-      q.endDate = new Date(String(req.query.endDate));
-    }
+    const range = parseReportYmdRange(req.query);
+    if (range?.fromYmd) q.fromYmd = range.fromYmd;
+    if (range?.toYmd) q.toYmd = range.toYmd;
 
     if (req.query.status === 'SUCCESS' || req.query.status === 'FAILED') {
       q.status = req.query.status;

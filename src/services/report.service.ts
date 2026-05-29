@@ -3,14 +3,15 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User';
 import Log, { type LogAction } from '../models/log.model';
 import { getTicketModel } from '../models/Ticket';
+import { buildCreatedAtMatch, buildDrawDateMatch, type ReportYmdRange } from '../utils/reportDateRange';
 
 const REPORT_DELETE_JWT_SECRET =
   process.env.REPORT_DELETE_SECRET || process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
 
 export type ReportCurrentUser = { _id: string; role: string };
 
-/** Optional ticket date filter (sale time = Ticket.createdAt), same semantics as transaction report dates */
-export type ReportDateRange = { start?: Date; end?: Date };
+/** Calendar-day range (YYYY-MM-DD) in REPORT_TIMEZONE; tickets match drawDate, logs match createdAt. */
+export type ReportDateRange = ReportYmdRange;
 
 const FINANCIAL_ACTIONS: LogAction[] = [
   'CREDIT_TRANSFER',
@@ -38,8 +39,8 @@ const DISPLAY_TYPE_TO_ACTION: Record<string, LogAction> = {
 };
 
 export interface TransactionReportQuery {
-  startDate?: Date;
-  endDate?: Date;
+  fromYmd?: string;
+  toYmd?: string;
   action?: LogAction;
   status?: 'SUCCESS' | 'FAILED';
   page?: number;
@@ -107,20 +108,6 @@ export class ReportService {
       return { $or: [{ _id: id }, { retailerId: id }] };
     }
     return { _id: { $in: [] } };
-  }
-
-  private static normalizeDayRange(start?: Date, end?: Date): { start?: Date; end?: Date } {
-    let s: Date | undefined;
-    let e: Date | undefined;
-    if (start) {
-      s = new Date(start);
-      s.setHours(0, 0, 0, 0);
-    }
-    if (end) {
-      e = new Date(end);
-      e.setHours(23, 59, 59, 999);
-    }
-    return { start: s, end: e };
   }
 
   private static num(v: unknown): number | undefined {
@@ -207,11 +194,9 @@ export class ReportService {
       userId: { $in: playerIds },
       status: { $ne: 'cancelled' }
     };
-    const { start, end } = this.normalizeDayRange(range?.start, range?.end);
-    if (start || end) {
-      match.createdAt = {} as Record<string, Date>;
-      if (start) (match.createdAt as Record<string, Date>).$gte = start;
-      if (end) (match.createdAt as Record<string, Date>).$lte = end;
+    const drawDate = buildDrawDateMatch(range);
+    if (drawDate) {
+      match.drawDate = drawDate;
     }
     return match;
   }
@@ -541,11 +526,9 @@ export class ReportService {
       logQuery.status = query.status;
     }
 
-    const { start, end } = this.normalizeDayRange(query.startDate, query.endDate);
-    if (start || end) {
-      logQuery.createdAt = {} as Record<string, Date>;
-      if (start) (logQuery.createdAt as Record<string, Date>).$gte = start;
-      if (end) (logQuery.createdAt as Record<string, Date>).$lte = end;
+    const createdAt = buildCreatedAtMatch({ fromYmd: query.fromYmd, toYmd: query.toYmd });
+    if (createdAt) {
+      logQuery.createdAt = createdAt;
     }
 
     const [total, logs] = await Promise.all([
@@ -835,16 +818,14 @@ export class ReportService {
   }
 
   static async previewDeleteTurnoverTickets(fromYmd: string, toYmd: string) {
-    const start = new Date(`${fromYmd}T00:00:00.000`);
-    const end = new Date(`${toYmd}T23:59:59.999`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    if (fromYmd > toYmd) {
       throw new Error('Invalid date range');
     }
     const playerIds = await this.adminPlayerIdsForDelete();
     if (playerIds.length === 0) {
       return { previewCount: 0, confirmToken: '', message: 'No player scope' };
     }
-    const match = this.buildTicketMatch(playerIds, { start, end });
+    const match = this.buildTicketMatch(playerIds, { fromYmd, toYmd });
     const previewCount = await getTicketModel().countDocuments(match);
     const confirmToken =
       previewCount > 0
@@ -886,13 +867,11 @@ export class ReportService {
     ) {
       throw new Error('Confirmation token does not match this delete request');
     }
-    const start = new Date(`${fromYmd}T00:00:00.000`);
-    const end = new Date(`${toYmd}T23:59:59.999`);
     const playerIds = await this.adminPlayerIdsForDelete();
     if (playerIds.length === 0) {
       return { deletedCount: 0, message: 'No tickets deleted' };
     }
-    const match = this.buildTicketMatch(playerIds, { start, end });
+    const match = this.buildTicketMatch(playerIds, { fromYmd, toYmd });
     const res = await getTicketModel().deleteMany(match);
     return {
       deletedCount: res.deletedCount ?? 0,
@@ -901,16 +880,14 @@ export class ReportService {
   }
 
   static async previewDeleteHistoryTickets(fromYmd: string, toYmd: string) {
-    const start = new Date(`${fromYmd}T00:00:00.000`);
-    const end = new Date(`${toYmd}T23:59:59.999`);
-    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    if (fromYmd > toYmd) {
       throw new Error('Invalid date range');
     }
     const playerIds = await this.adminPlayerIdsForDelete();
     if (playerIds.length === 0) {
       return { previewCount: 0, confirmToken: '', message: 'No player scope' };
     }
-    const match = this.buildTicketMatch(playerIds, { start, end });
+    const match = this.buildTicketMatch(playerIds, { fromYmd, toYmd });
     const previewCount = await getTicketModel().countDocuments(match);
     const confirmToken =
       previewCount > 0
@@ -952,13 +929,11 @@ export class ReportService {
     ) {
       throw new Error('Confirmation token does not match this delete request');
     }
-    const start = new Date(`${fromYmd}T00:00:00.000`);
-    const end = new Date(`${toYmd}T23:59:59.999`);
     const playerIds = await this.adminPlayerIdsForDelete();
     if (playerIds.length === 0) {
       return { deletedCount: 0, message: 'No records deleted' };
     }
-    const match = this.buildTicketMatch(playerIds, { start, end });
+    const match = this.buildTicketMatch(playerIds, { fromYmd, toYmd });
     const res = await getTicketModel().deleteMany(match);
     return {
       deletedCount: res.deletedCount ?? 0,
