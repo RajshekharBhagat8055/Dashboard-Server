@@ -1,5 +1,10 @@
 import { ObjectId } from 'mongodb';
 import { getArkaDb, getSkillGameDb } from '../config/connectDB';
+import {
+  buildCreatedAtMatch,
+  buildDrawDateFilter,
+  type ReportYmdRange,
+} from '../utils/reportDateRange';
 
 type UserRole = 'admin' | 'super_distributor' | 'distributor' | 'retailer' | 'user';
 
@@ -8,10 +13,58 @@ interface AuthUser {
   role: UserRole;
 }
 
-interface ReportDateFilter {
-  from?: Date;
-  to?: Date;
-}
+/** Calendar-day range (YYYY-MM-DD) in REPORT_TIMEZONE */
+type ReportDateFilter = ReportYmdRange;
+
+const applyTicketDateFilter = (matchStage: Record<string, unknown>, dateFilter: ReportDateFilter) => {
+  const drawDateClause = buildDrawDateFilter(dateFilter);
+  if (drawDateClause) Object.assign(matchStage, drawDateClause);
+};
+
+/** Map a leaf bettor to a drill-down child node (retailer / distributor / etc.). */
+const resolveLeafToChildNode = (
+  leaf: {
+    _id: ObjectId;
+    retailerId?: ObjectId;
+    createdBy?: ObjectId;
+    distributorId?: ObjectId;
+    superDistributorId?: ObjectId;
+    parentId?: ObjectId;
+  },
+  childNodeIdStrings: Set<string>,
+): string | undefined => {
+  const pId = leaf._id.toString();
+  if (childNodeIdStrings.has(pId)) return pId;
+  if (leaf.retailerId && childNodeIdStrings.has(leaf.retailerId.toString())) {
+    return leaf.retailerId.toString();
+  }
+  if (leaf.createdBy && childNodeIdStrings.has(leaf.createdBy.toString())) {
+    return leaf.createdBy.toString();
+  }
+  if (leaf.distributorId && childNodeIdStrings.has(leaf.distributorId.toString())) {
+    return leaf.distributorId.toString();
+  }
+  if (leaf.superDistributorId && childNodeIdStrings.has(leaf.superDistributorId.toString())) {
+    return leaf.superDistributorId.toString();
+  }
+  if (leaf.parentId && childNodeIdStrings.has(leaf.parentId.toString())) {
+    return leaf.parentId.toString();
+  }
+  return undefined;
+};
+
+const ticketUserIdGroupStage = {
+  $group: {
+    _id: { $toString: '$userId' },
+    playPoint: { $sum: { $ifNull: ['$totalPoint', 0] } },
+    winPoint: { $sum: { $ifNull: ['$winPoint', 0] } },
+  },
+};
+
+const applyTransactionDateFilter = (query: Record<string, unknown>, dateFilter: ReportDateFilter) => {
+  const createdAt = buildCreatedAtMatch(dateFilter);
+  if (createdAt) query.createdAt = createdAt;
+};
 
 interface ScopedUser {
   _id: ObjectId;
@@ -27,13 +80,6 @@ interface ScopedContext {
   scopedTicketUserIds: Array<string | ObjectId>;
   userMap: Map<string, ScopedUser>;
 }
-
-const buildCreatedAtFilter = (dateFilter: ReportDateFilter): Record<string, Date> | undefined => {
-  const match: Record<string, Date> = {};
-  if (dateFilter.from) match.$gte = dateFilter.from;
-  if (dateFilter.to) match.$lte = dateFilter.to;
-  return Object.keys(match).length ? match : undefined;
-};
 
 const getScopedUsers = async (currentUser: AuthUser): Promise<ScopedContext> => {
   const arkaDb = getArkaDb();
@@ -200,6 +246,7 @@ export class ReportService {
       }).project({
         role: 1,
         commissionRate: 1,
+        createdBy: 1,
         superDistributorId: 1,
         distributorId: 1,
         retailerId: 1,
@@ -208,29 +255,17 @@ export class ReportService {
         _id: ObjectId;
         role: string;
         commissionRate?: number;
+        createdBy?: ObjectId;
         superDistributorId?: ObjectId;
         distributorId?: ObjectId;
         retailerId?: ObjectId;
         parentId?: ObjectId;
       }>;
 
-      // Map each leaf player → the child node bucket it belongs to
       const playerToChildNode = new Map<string, string>();
       for (const leaf of allLeafDocs) {
-        const pId = leaf._id.toString();
-        if (childNodeIdStrings.has(pId)) { playerToChildNode.set(pId, pId); continue; }
-        if (leaf.retailerId && childNodeIdStrings.has(leaf.retailerId.toString())) {
-          playerToChildNode.set(pId, leaf.retailerId.toString()); continue;
-        }
-        if (leaf.distributorId && childNodeIdStrings.has(leaf.distributorId.toString())) {
-          playerToChildNode.set(pId, leaf.distributorId.toString()); continue;
-        }
-        if (leaf.superDistributorId && childNodeIdStrings.has(leaf.superDistributorId.toString())) {
-          playerToChildNode.set(pId, leaf.superDistributorId.toString()); continue;
-        }
-        if (leaf.parentId && childNodeIdStrings.has(leaf.parentId.toString())) {
-          playerToChildNode.set(pId, leaf.parentId.toString());
-        }
+        const nodeId = resolveLeafToChildNode(leaf, childNodeIdStrings);
+        if (nodeId) playerToChildNode.set(leaf._id.toString(), nodeId);
       }
 
       // Store leaf metadata for commission calculation during ticket aggregation
@@ -292,20 +327,16 @@ export class ReportService {
       const scopedTicketUserIds: Array<string | ObjectId> = [];
       for (const oid of scopedPlayerIds) scopedTicketUserIds.push(oid.toString(), oid);
 
-      const createdAtFilter = buildCreatedAtFilter(dateFilter);
-      const matchStage: Record<string, unknown> = { userId: { $in: scopedTicketUserIds } };
-      if (createdAtFilter) matchStage.createdAt = createdAtFilter;
+      const matchStage: Record<string, unknown> = {
+        userId: { $in: scopedTicketUserIds },
+        status: { $ne: 'cancelled' },
+      };
+      applyTicketDateFilter(matchStage, dateFilter);
 
       const ticketCollection = getSkillGameDb().collection('tickets');
       const ticketAgg = await ticketCollection.aggregate([
         { $match: matchStage },
-        {
-          $group: {
-            _id: '$userId',
-            playPoint: { $sum: { $ifNull: ['$totalPoint', 0] } },
-            winPoint: { $sum: { $ifNull: ['$winPoint', 0] } },
-          },
-        },
+        ticketUserIdGroupStage,
       ]).toArray();
 
       // Accumulate per child-node: play/win + all three commission tiers from each leaf's rate chain
@@ -381,24 +412,16 @@ export class ReportService {
       return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
     }
 
-    const createdAtFilter = buildCreatedAtFilter(dateFilter);
     const matchStage: Record<string, unknown> = {
       userId: { $in: scopedTicketUserIds },
+      status: { $ne: 'cancelled' },
     };
-    if (createdAtFilter) {
-      matchStage.createdAt = createdAtFilter;
-    }
+    applyTicketDateFilter(matchStage, dateFilter);
 
     const ticketCollection = getSkillGameDb().collection('tickets');
     const rows = await ticketCollection.aggregate([
       { $match: matchStage },
-      {
-        $group: {
-          _id: '$userId',
-          playPoint: { $sum: { $ifNull: ['$totalPoint', 0] } },
-          winPoint: { $sum: { $ifNull: ['$winPoint', 0] } },
-        },
-      },
+      ticketUserIdGroupStage,
       {
         $project: {
           _id: 0,
@@ -489,14 +512,13 @@ export class ReportService {
       return { transactions: [], total: 0, page: options.page, limit: options.limit };
     }
 
-    const createdAtFilter = buildCreatedAtFilter(dateFilter);
     const query: Record<string, unknown> = {
       $or: [
         { 'source.userId': { $in: scopedUserObjectIds } },
         { 'destination.userId': { $in: scopedUserObjectIds } },
       ],
     };
-    if (createdAtFilter) query.createdAt = createdAtFilter;
+    applyTransactionDateFilter(query, dateFilter);
 
     const typeFilter = getTransactionTypeFilter(options.type);
     if (typeFilter) {
@@ -560,11 +582,11 @@ export class ReportService {
     const payoutRoleSet = new Set<UserRole>(['super_distributor', 'distributor', 'retailer']);
     const eligibleRows = users.filter((user) => payoutRoleSet.has(user.role));
 
-    const createdAtFilter = buildCreatedAtFilter(dateFilter);
     const matchStage: Record<string, unknown> = {
       userId: { $in: scopedTicketUserIds },
+      status: { $ne: 'cancelled' },
     };
-    if (createdAtFilter) matchStage.createdAt = createdAtFilter;
+    applyTicketDateFilter(matchStage, dateFilter);
 
     const ticketCollection = getSkillGameDb().collection('tickets');
     const totalsByUser = await ticketCollection.aggregate([
@@ -614,11 +636,8 @@ export class ReportService {
       throw new Error('Access denied - Admin only');
     }
 
-    const createdAtFilter = buildCreatedAtFilter(dateFilter);
-    const matchStage: Record<string, unknown> = {};
-    if (createdAtFilter) {
-      matchStage.createdAt = createdAtFilter;
-    }
+    const matchStage: Record<string, unknown> = { status: { $ne: 'cancelled' } };
+    applyTicketDateFilter(matchStage, dateFilter);
 
     const ticketCollection = getSkillGameDb().collection('tickets');
     const rows = await ticketCollection.aggregate([
@@ -698,12 +717,10 @@ export class ReportService {
     };
 
     if (options.exactDate && /^\d{4}-\d{2}-\d{2}$/.test(options.exactDate)) {
-      const from = new Date(`${options.exactDate}T00:00:00`);
-      const to = new Date(`${options.exactDate}T23:59:59.999`);
-      matchStage.createdAt = { $gte: from, $lte: to };
+      const exactClause = buildDrawDateFilter({ fromYmd: options.exactDate, toYmd: options.exactDate });
+      if (exactClause) Object.assign(matchStage, exactClause);
     } else {
-      const createdAtFilter = buildCreatedAtFilter(dateFilter);
-      if (createdAtFilter) matchStage.createdAt = createdAtFilter;
+      applyTicketDateFilter(matchStage, dateFilter);
     }
 
     const normalizedGameType = options.gameType?.trim().toLowerCase();
@@ -845,16 +862,13 @@ export class ReportService {
       throw new Error('Access denied - Admin only');
     }
 
-    const fromDate = new Date(`${from}T00:00:00`);
-    const toDate = new Date(`${to}T23:59:59.999`);
-    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    if (from > to) {
       throw new Error('Invalid date range');
     }
 
+    const drawDateClause = buildDrawDateFilter({ fromYmd: from, toYmd: to });
     const ticketCollection = getSkillGameDb().collection('tickets');
-    const previewCount = await ticketCollection.countDocuments({
-      createdAt: { $gte: fromDate, $lte: toDate },
-    });
+    const previewCount = await ticketCollection.countDocuments(drawDateClause ?? {});
 
     const confirmToken = ReportService.makeDeleteConfirmToken({
       target: 'history',
@@ -883,16 +897,13 @@ export class ReportService {
       throw new Error('Access denied - Admin only');
     }
 
-    const fromDate = new Date(`${from}T00:00:00`);
-    const toDate = new Date(`${to}T23:59:59.999`);
-    if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    if (from > to) {
       throw new Error('Invalid date range');
     }
 
+    const drawDateClause = buildDrawDateFilter({ fromYmd: from, toYmd: to });
     const ticketCollection = getSkillGameDb().collection('tickets');
-    const previewCount = await ticketCollection.countDocuments({
-      createdAt: { $gte: fromDate, $lte: toDate },
-    });
+    const previewCount = await ticketCollection.countDocuments(drawDateClause ?? {});
 
     const expectedToken = ReportService.makeDeleteConfirmToken({
       target: 'history',
@@ -905,9 +916,7 @@ export class ReportService {
       throw new Error('Confirmation required. Please preview again and confirm with the latest token.');
     }
 
-    const deleteResult = await ticketCollection.deleteMany({
-      createdAt: { $gte: fromDate, $lte: toDate },
-    });
+    const deleteResult = await ticketCollection.deleteMany(drawDateClause ?? {});
 
     return {
       deletedCount: deleteResult.deletedCount ?? 0,

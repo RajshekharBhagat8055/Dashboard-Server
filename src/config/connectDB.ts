@@ -36,7 +36,10 @@ const connectDB = async(): Promise<void> => {
         }
 
         const arkaDbName = process.env.DB_NAME || 'ArkaAdmin';
-        const skillGameDbName = process.env.SKILL_GAME_DB_NAME || 'SkillGameDB';
+        const skillGameDbName =
+            process.env.SKILL_GAME_DB_NAME ||
+            process.env.TICKETS_DB_NAME ||
+            'SkillGameDB';
 
         const connectionUri = buildConnectionUri(uri, arkaDbName);
 

@@ -1,26 +1,8 @@
 import { Request, Response } from 'express';
 import { ReportService } from '../services/report.service';
+import { parseReportYmdRange } from '../utils/reportDateRange';
 
-const parseDateFilter = (req: Request): { from?: Date; to?: Date } => {
-  const fromDate = req.query.fromDate as string | undefined;
-  const toDate = req.query.toDate as string | undefined;
-
-  const dateFilter: { from?: Date; to?: Date } = {};
-  if (fromDate) {
-    const from = new Date(fromDate);
-    if (!Number.isNaN(from.getTime())) {
-      dateFilter.from = from;
-    }
-  }
-  if (toDate) {
-    const to = new Date(toDate);
-    if (!Number.isNaN(to.getTime())) {
-      to.setHours(23, 59, 59, 999);
-      dateFilter.to = to;
-    }
-  }
-  return dateFilter;
-};
+const parseDateFilter = (req: Request) => parseReportYmdRange(req.query as Record<string, unknown>) ?? {};
 
 const getTurnoverReport = async (req: Request, res: Response) => {
   try {
