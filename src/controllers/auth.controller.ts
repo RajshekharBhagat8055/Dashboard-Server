@@ -161,8 +161,7 @@ const logout = async (req: Request, res: Response) => {
     if (userId) {
       // Update user status to offline
       await User.findByIdAndUpdate(userId, {
-        isOnline: false,
-        lastActivity: new Date()
+        isOnline: false
       });
     }
 
