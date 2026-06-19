@@ -853,6 +853,73 @@ const getRetailersUnderDistributor = async (req: Request, res: Response) => {
     }
 };
 
+const getChildrenUnderDistributor = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        const { distributorId } = req.params;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        if (!distributorId) {
+            return res.status(400).json({
+                success: false,
+                message: "Distributor ID is required",
+            });
+        }
+
+        let retailers: any[] = [];
+        let users: any[] = [];
+
+        if (req.user?.role === 'admin') {
+            retailers = await UserService.getRetailersUnderDistributor(distributorId);
+            users = await UserService.getUsersUnderDistributor(distributorId);
+        } else if (req.user?.role === 'super_distributor') {
+            const distributor = await User.findById(distributorId).select('superDistributorId role').lean();
+            if (distributor && distributor.role === 'distributor' && distributor.superDistributorId?.toString() === userId.toString()) {
+                retailers = await UserService.getRetailersUnderDistributor(distributorId);
+                users = await UserService.getUsersUnderDistributor(distributorId);
+            } else {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - This distributor is not under you",
+                });
+            }
+        } else if (req.user?.role === 'distributor') {
+            if (userId.toString() !== distributorId) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - You can only view your own children",
+                });
+            }
+            retailers = await UserService.getRetailersUnderDistributor(distributorId);
+            users = await UserService.getUsersUnderDistributor(distributorId);
+        } else {
+            return res.status(403).json({
+                success: false,
+                message: "Access denied",
+            });
+        }
+
+        const children = [...retailers, ...users];
+        return res.status(200).json({
+            success: true,
+            data: children,
+            count: children.length,
+        });
+    } catch (error) {
+        console.error(`Error in getChildrenUnderDistributor: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+};
+
 export {
     // Admin endpoints
     getAllSuperDistributors,
@@ -891,4 +958,5 @@ export {
     getSuperDistributorsForHierarchy,
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
+    getChildrenUnderDistributor,
 };
