@@ -39,6 +39,7 @@ import {
     getSuperDistributorsForHierarchy,
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
+    getChildrenUnderDistributor,
 } from "../controllers/user.controller";
 
 const userRouter = Router();
@@ -74,6 +75,7 @@ userRouter.get('/online-users', getOnlineUsers); // All authenticated users
 userRouter.get('/hierarchy/super-distributors', getSuperDistributorsForHierarchy); // Get SDs for hierarchy selection
 userRouter.get('/hierarchy/super-distributor/:superDistributorId/distributors', getDistributorsUnderSuperDistributor); // Get distributors under SD
 userRouter.get('/hierarchy/distributor/:distributorId/retailers', getRetailersUnderDistributor); // Get retailers under distributor
+userRouter.get('/hierarchy/distributor/:distributorId/children', getChildrenUnderDistributor); // Get retailers + users under distributor
 
 // ============ INDIVIDUAL USER ENDPOINTS (comes last to avoid conflicts) ============
 userRouter.get('/user/:id', getUserById); // Get single user by ID

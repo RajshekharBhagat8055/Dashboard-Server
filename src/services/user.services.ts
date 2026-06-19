@@ -1,5 +1,6 @@
 import { ObjectId } from "mongodb";
 import User from "../models/User";
+import { getTicketModel } from "../models/Ticket";
 
 export interface HierarchyUser {
     _id: ObjectId
@@ -396,53 +397,83 @@ export class UserService {
     // ============ ONLINE USERS METHODS ============
 
     static async getOnlineUsers(currentUser: any): Promise<HierarchyUser[]> {
-        // Consider users online if they have been active within the last 30 minutes
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         let onlineUsers: any[] = [];
 
         if (currentUser.role === 'admin') {
-            // Admin sees all online users in the system
+            // Admin sees all online users except admins themselves
             onlineUsers = await User.find({
-                lastActivity: { $gte: thirtyMinutesAgo },
+                isOnline: true,
                 isActive: true,
-                isBanned: false
+                isBanned: false,
+                role: { $ne: 'admin' }
             })
             .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
             .sort({lastActivity: -1})
             .lean();
         } else if (currentUser.role === 'super_distributor') {
-            // Super distributor sees online users in their hierarchy
-            // Get all users created by this super distributor and their descendants
             const hierarchyUsers = await UserService.getUsersUnderSuperDistributor(currentUser._id.toString());
-
-            // Filter to only online users
-            onlineUsers = hierarchyUsers.filter(user =>
-                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
-            );
+            onlineUsers = hierarchyUsers.filter(user => user.isOnline);
         } else if (currentUser.role === 'distributor') {
-            // Distributor sees online users in their hierarchy
             const hierarchyUsers = await UserService.getUsersUnderDistributor(currentUser._id.toString());
-
-            // Filter to only online users
-            onlineUsers = hierarchyUsers.filter(user =>
-                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
-            );
+            onlineUsers = hierarchyUsers.filter(user => user.isOnline);
         } else if (currentUser.role === 'retailer') {
-            // Retailer sees online users in their hierarchy
             const hierarchyUsers = await UserService.getUsersUnderRetailer(currentUser._id.toString());
-
-            // Filter to only online users
-            onlineUsers = hierarchyUsers.filter(user =>
-                user.lastActivity && user.lastActivity >= thirtyMinutesAgo
-            );
+            onlineUsers = hierarchyUsers.filter(user => user.isOnline);
         }
 
-        // Use the stored isOnline status from database (set during login/logout)
-        return onlineUsers.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        // Aggregate ticket stats for online users
+        const userIds = onlineUsers.map(u => u._id);
+        let ticketStatsMap = new Map<string, { playPoints: number; winPoints: number; claimPoints: number; endPoints: number }>();
+
+        if (userIds.length > 0) {
+            try {
+                const Ticket = getTicketModel();
+                const ticketStats = await Ticket.aggregate<{
+                    _id: ObjectId;
+                    playPoints: number;
+                    winPoints: number;
+                    claimPoints: number;
+                }>([
+                    { $match: { userId: { $in: userIds } } },
+                    {
+                        $group: {
+                            _id: '$userId',
+                            playPoints: { $sum: '$totalPoint' },
+                            winPoints: { $sum: '$winPoint' },
+                            claimPoints: {
+                                $sum: { $cond: [{ $and: ['$claimed', { $gt: ['$winPoint', 0] }] }, '$winPoint', 0] }
+                            }
+                        }
+                    }
+                ]);
+
+                for (const stat of ticketStats) {
+                    const play = stat.playPoints ?? 0;
+                    const win = stat.winPoints ?? 0;
+                    const claim = stat.claimPoints ?? 0;
+                    ticketStatsMap.set(stat._id.toString(), {
+                        playPoints: play,
+                        winPoints: win,
+                        claimPoints: claim,
+                        endPoints: play - win,
+                    });
+                }
+            } catch (err) {
+                console.error('Failed to aggregate ticket stats for online users:', err);
+            }
+        }
+
+        return onlineUsers.map(user => {
+            const stats = ticketStatsMap.get(user._id.toString());
+            return {
+                ...user,
+                isOnline: user.isOnline || false,
+                playPoints: stats?.playPoints ?? 0,
+                winPoints: stats?.winPoints ?? 0,
+                claimPoints: stats?.claimPoints ?? 0,
+                endPoints: stats?.endPoints ?? 0,
+            };
+        });
     }
 
     // ============ USER METHODS ============
