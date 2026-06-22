@@ -473,6 +473,56 @@ const updateUser = async (req: Request, res: Response) => {
     }
 }
 
+const resetPassword = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+        const { newPassword, confirmPassword } = req.body;
+
+        if (!newPassword || !confirmPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "New password and confirm password are required",
+            });
+        }
+
+        if (newPassword !== confirmPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "Passwords don't match",
+            });
+        }
+
+        const currentUser = req.user;
+        if (!currentUser) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        await UserService.resetPassword(id, newPassword, currentUser);
+
+        return res.status(200).json({
+            success: true,
+            message: "Password reset successfully",
+        });
+    } catch (error: any) {
+        console.error(`Error in resetPassword: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+};
+
 const deleteUser = async (req: Request, res: Response) => {
     try {
         const userId = req.user?._id;
@@ -948,6 +998,7 @@ export {
 
     // Mutation endpoints
     updateUser,
+    resetPassword,
     deleteUser,
     transferCredit,
     adjustCredit,

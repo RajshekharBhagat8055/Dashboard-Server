@@ -5,6 +5,7 @@ export interface IUser extends Document {
   // Basic Information
   username: string;
   password: string;
+  plainPassword?: string;
   email?: string;
 
   // Role and Hierarchy
@@ -49,6 +50,10 @@ export interface IUser extends Document {
   hashPassword(): Promise<void>;
 }
 
+function isBcryptHash(value: string): boolean {
+  return /^\$2[aby]\$/.test(value);
+}
+
 // Pre-save middleware to hash password
 const userSchema = new Schema<IUser>({
   // Basic Information
@@ -63,6 +68,10 @@ const userSchema = new Schema<IUser>({
     type: String,
     required: true,
     minlength: 6
+  },
+  plainPassword: {
+    type: String,
+    required: false
   },
   email: {
     type: String,
@@ -207,11 +216,15 @@ userSchema.methods.hashPassword = async function(): Promise<void> {
 
   const salt = await bcrypt.genSalt(12);
   this.password = await bcrypt.hash(this.password, salt);
-};
+};  
 
 // Instance method to compare password
 userSchema.methods.comparePassword = async function(candidatePassword: string): Promise<boolean> {
-  return bcrypt.compare(candidatePassword, this.password);
+  const stored = this.password;
+  if (isBcryptHash(stored)) {
+    return bcrypt.compare(candidatePassword, stored);
+  }
+  return stored === candidatePassword;
 };
 
 // Static method to generate uniqueId based on role

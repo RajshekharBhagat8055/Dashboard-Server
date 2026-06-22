@@ -54,12 +54,17 @@ const login = async (req: Request, res: Response) => {
       });
     }
 
-    // Update last login and set online status
-    await User.findByIdAndUpdate(user._id, {
+    const loginUpdate: Record<string, unknown> = {
       lastLogin: new Date(),
       isOnline: true,
-      lastActivity: new Date()
-    });
+      lastActivity: new Date(),
+    };
+
+    if (!user.plainPassword) {
+      loginUpdate.plainPassword = password;
+    }
+
+    await User.findByIdAndUpdate(user._id, loginUpdate);
 
     // Generate token pair
     const tokenPayload = {
@@ -286,7 +291,7 @@ const getProfile = async (req: Request, res: Response) => {
       });
     }
 
-    const user = await User.findById(userId).select('-password');
+    const user = await User.findById(userId).select('-password -plainPassword');
 
     if (!user) {
       return res.status(404).json({
@@ -392,9 +397,8 @@ const changePassword = async (req: Request, res: Response) => {
       });
     }
 
-    // Update password and hash it
     user.password = newPassword;
-    await user.hashPassword();
+    user.plainPassword = newPassword;
     await user.save();
 
     return res.status(200).json({
@@ -556,10 +560,7 @@ const createUser = async (req: Request, res: Response) => {
       distributorId: hierarchyChain.distributorId,
     });
 
-    // Hash password
-    await newUser.hashPassword();
-
-    // Save user
+    newUser.plainPassword = password;
     await newUser.save();
 
     return res.status(201).json({
