@@ -192,7 +192,7 @@ async function createAdmin(userData: any) {
         totalSubordinates: 0
       });
 
-      await newUser.hashPassword();
+      newUser.plainPassword = userData.password;
       await newUser.save();
 
       // For admin users, set createdBy to self. For others, this would be set by the creator

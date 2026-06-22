@@ -660,6 +660,48 @@ const unBanUser = async( req: Request, res: Response) => {
     }
 }
 
+const resetPassword = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        const { id } = req.params;
+        const { newPassword, confirmPassword } = req.body;
+
+        if (!newPassword || !confirmPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "New password and confirm password are required",
+            });
+        }
+
+        if (newPassword !== confirmPassword) {
+            return res.status(400).json({
+                success: false,
+                message: "Passwords do not match",
+            });
+        }
+
+        const result = await UserService.resetPassword(id, newPassword, req.user);
+        return res.status(200).json({
+            success: true,
+            message: "Password reset successfully",
+            data: result,
+        });
+    } catch (error: any) {
+        console.error(`Error in resetPassword: ${error}`);
+        return res.status(error.status || 500).json({
+            success: false,
+            message: error.message || "Internal server error",
+        });
+    }
+}
+
 // ============ HIERARCHY SELECTION ENDPOINTS (for cascading dropdowns) ============
 
 /**
@@ -953,6 +995,7 @@ export {
     adjustCredit,
     banUser,
     unBanUser,
+    resetPassword,
 
     // Hierarchy selection endpoints
     getSuperDistributorsForHierarchy,

@@ -34,6 +34,7 @@ import {
     adjustCredit,
     banUser,
     unBanUser,
+    resetPassword,
 
     // Hierarchy selection endpoints
     getSuperDistributorsForHierarchy,
@@ -82,6 +83,7 @@ userRouter.get('/user/:id', getUserById); // Get single user by ID
 
 // ============ MUTATION ENDPOINTS ============
 userRouter.put('/user/:id', updateUser); // Update user
+userRouter.post('/user/:id/reset-password', resetPassword); // Reset user password
 userRouter.delete('/user/:id', deleteUser); // Delete user
 userRouter.post('/user/:id/transfer-credit', transferCredit); // Transfer credit
 userRouter.post('/user/:id/adjust-credit', adjustCredit); // Adjust credit

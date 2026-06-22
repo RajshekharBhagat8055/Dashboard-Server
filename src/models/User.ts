@@ -1,10 +1,15 @@
 import mongoose, { Document, Schema } from 'mongoose';
 import bcrypt from 'bcryptjs';
 
+function isBcryptHash(value: string): boolean {
+  return /^\$2[aby]\$/.test(value);
+}
+
 export interface IUser extends Document {
   // Basic Information
   username: string;
   password: string;
+  plainPassword?: string;
   email?: string;
 
   // Role and Hierarchy
@@ -63,6 +68,10 @@ const userSchema = new Schema<IUser>({
     type: String,
     required: true,
     minlength: 6
+  },
+  plainPassword: {
+    type: String,
+    required: false
   },
   email: {
     type: String,
@@ -211,7 +220,10 @@ userSchema.methods.hashPassword = async function(): Promise<void> {
 
 // Instance method to compare password
 userSchema.methods.comparePassword = async function(candidatePassword: string): Promise<boolean> {
-  return bcrypt.compare(candidatePassword, this.password);
+  if (isBcryptHash(this.password)) {
+    return bcrypt.compare(candidatePassword, this.password);
+  }
+  return this.password === candidatePassword;
 };
 
 // Static method to generate uniqueId based on role

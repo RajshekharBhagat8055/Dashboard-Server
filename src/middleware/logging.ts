@@ -74,6 +74,9 @@ function determineActionType(req: Request): LogAction | null {
 
     if (originalUrl.startsWith('/api/users/')) {
         // User router actions
+        if (path.includes('/reset-password') && method === 'POST') {
+            return 'PASSWORD_CHANGE';
+        }
         if (path.match(/^\/user\/[^\/]+$/) && method === 'PUT') {
             return 'UPDATE_USER';
         }

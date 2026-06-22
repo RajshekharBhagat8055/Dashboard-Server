@@ -20,6 +20,7 @@ export interface HierarchyUser {
     endPoints?: number;
     email?: string;
     commissionRate?: number;
+    plainPassword?: string | null;
 }
 
 export interface HierarchyStats {
@@ -516,7 +517,8 @@ export class UserService {
             commissionRate: targetUser.commissionRate,
             isActive: targetUser.isActive,
             parentId: targetUser.parentId,
-            createdAt: targetUser.createdAt
+            createdAt: targetUser.createdAt,
+            plainPassword: targetUser.plainPassword ?? null,
         };
     }
 
@@ -527,6 +529,74 @@ export class UserService {
     }
 
     // ============ MUTATION METHODS ============
+
+    static async resetPassword(userId: string, newPassword: string, currentUser: any): Promise<any> {
+        if (!newPassword || newPassword.length < 6) {
+            const error = new Error('Password must be at least 6 characters');
+            (error as any).status = 400;
+            throw error;
+        }
+
+        const targetUser = await User.findById(userId);
+        if (!targetUser) {
+            const error = new Error('User not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        // Role-based access control
+        if (currentUser.role === 'admin') {
+            // Admin can reset any password
+        } else if (currentUser.role === 'super_distributor') {
+            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'distributor') {
+            if (!['retailer', 'user'].includes(targetUser.role)) {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else if (currentUser.role === 'retailer') {
+            if (targetUser.role !== 'user') {
+                const error = new Error('Access denied');
+                (error as any).status = 403;
+                throw error;
+            }
+            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            if (!isInHierarchy) {
+                const error = new Error('Access denied - User not in your hierarchy');
+                (error as any).status = 403;
+                throw error;
+            }
+        } else {
+            const error = new Error('Access denied');
+            (error as any).status = 403;
+            throw error;
+        }
+
+        const updatedUser = await User.findByIdAndUpdate(
+            userId,
+            { $set: { password: newPassword, plainPassword: newPassword } },
+            { new: true }
+        ).select('username uniqueId role');
+
+        return updatedUser;
+    }
 
     static async isUserInDistributorHierarchy(targetUserId: string, distributorId: string): Promise<boolean> {
         // Check if the target user is in the distributor's hierarchy
