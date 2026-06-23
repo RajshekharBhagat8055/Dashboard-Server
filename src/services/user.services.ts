@@ -790,7 +790,12 @@ export class UserService {
     }
 
     static async deleteUser(userId: string, currentUser: any): Promise<void> {
-        // Check permissions
+        if (currentUser.role !== 'admin') {
+            const error = new Error('Access denied - Only admin can delete users');
+            (error as any).status = 403;
+            throw error;
+        }
+
         const targetUser = await User.findById(userId);
         if (!targetUser) {
             const error = new Error('User not found');
@@ -798,64 +803,30 @@ export class UserService {
             throw error;
         }
 
-        // Permission checks based on roles
-        if (currentUser.role === 'admin') {
-            // Admin can delete anyone
-        } else if (currentUser.role === 'super_distributor') {
-            // Super distributor can only delete distributors, retailers, and users under them
-            if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
-                const error = new Error('Access denied');
-                (error as any).status = 403;
-                throw error;
-            }
-            // Check if target user is in super distributor's hierarchy
-            const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
-            if (!isInHierarchy) {
-                const error = new Error('Access denied - User not in your hierarchy');
-                (error as any).status = 403;
-                throw error;
-            }
-        } else if (currentUser.role === 'distributor') {
-            // Distributor can only delete retailers and users under them
-            if (!['retailer', 'user'].includes(targetUser.role)) {
-                const error = new Error('Access denied');
-                (error as any).status = 403;
-                throw error;
-            }
-            // Check if target user is in distributor's hierarchy
-            const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
-            if (!isInHierarchy) {
-                const error = new Error('Access denied - User not in your hierarchy');
-                (error as any).status = 403;
-                throw error;
-            }
-        } else if (currentUser.role === 'retailer') {
-            // Retailer can only delete users under them
-            if (targetUser.role !== 'user') {
-                const error = new Error('Access denied');
-                (error as any).status = 403;
-                throw error;
-            }
-            // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
-            if (!isInHierarchy) {
-                const error = new Error('Access denied - User not in your hierarchy');
-                (error as any).status = 403;
-                throw error;
-            }
-        } else {
-            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
-            const error = new Error('Access denied');
+        if (targetUser.role === 'admin') {
+            const error = new Error('Cannot delete admin users');
             (error as any).status = 403;
             throw error;
         }
 
-        // Delete the user
-        await User.findByIdAndDelete(userId);
+        // Collect the entire subtree using iterative BFS
+        const idsToDelete: string[] = [userId];
+        const queue: string[] = [userId];
+
+        while (queue.length > 0) {
+            const parentIds = queue.splice(0, queue.length);
+            const children = await User.find({ parentId: { $in: parentIds } }).select('_id').lean();
+            for (const child of children) {
+                const childId = child._id.toString();
+                idsToDelete.push(childId);
+                queue.push(childId);
+            }
+        }
+
+        await User.deleteMany({ _id: { $in: idsToDelete } });
     }
 
-    static async transferCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
-        // Check permissions
+    static async transferCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
         const targetUser = await User.findById(userId);
         if (!targetUser) {
             const error = new Error('User not found');
@@ -869,12 +840,11 @@ export class UserService {
             (error as any).status = 404;
             throw error;
         }
-        console.log(`Transfer attempt - User: ${currentUserDoc.username}, Current Balance: ${currentUserDoc.creditBalance}, Transfer Amount: ${amount}`);
 
-        // Check if current user has enough credit
-        if (currentUserDoc.creditBalance < amount) {
-            const error = new Error(`Insufficient credit balance. You have ${currentUserDoc.creditBalance} credits but trying to transfer ${amount} credits.`);
-            (error as any).status = 400;
+        const isPasswordValid = await currentUserDoc.comparePassword(password);
+        if (!isPasswordValid) {
+            const error = new Error('Invalid password');
+            (error as any).status = 401;
             throw error;
         }
 
@@ -882,13 +852,11 @@ export class UserService {
         if (currentUser.role === 'admin') {
             // Admin can transfer to anyone
         } else if (currentUser.role === 'super_distributor') {
-            // Super distributor can only transfer to distributors, retailers, and users under them
             if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in super distributor's hierarchy
             const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -896,13 +864,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'distributor') {
-            // Distributor can only transfer to retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in distributor's hierarchy
             const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -910,13 +876,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'retailer') {
-            // Retailer can only transfer to users under them
             if (targetUser.role !== 'user') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in retailer's hierarchy
             const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -924,14 +888,25 @@ export class UserService {
                 throw error;
             }
         } else {
-            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
         }
 
-        // Perform the transfer
-        await User.findByIdAndUpdate(currentUser._id, { $inc: { creditBalance: -amount } });
+        // Funding comes from the target's direct parent, not the logged-in user
+        // If the parent is admin, treat as unlimited — no balance check or deduction
+        const parentUser = targetUser.parentId ? await User.findById(targetUser.parentId) : null;
+        const parentIsAdmin = parentUser?.role === 'admin';
+
+        if (parentUser && !parentIsAdmin) {
+            if (parentUser.creditBalance < amount) {
+                const error = new Error(`Insufficient balance in parent account. Parent has ${parentUser.creditBalance} credits.`);
+                (error as any).status = 400;
+                throw error;
+            }
+            await User.findByIdAndUpdate(parentUser._id, { $inc: { creditBalance: -amount } });
+        }
+
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             { $inc: { creditBalance: amount } },
@@ -941,8 +916,7 @@ export class UserService {
         return updatedUser!;
     }
 
-    static async adjustCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
-        // Check permissions
+    static async adjustCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
         const targetUser = await User.findById(userId);
         if (!targetUser) {
             const error = new Error('User not found');
@@ -950,17 +924,29 @@ export class UserService {
             throw error;
         }
 
+        const currentUserDoc = await User.findById(currentUser._id);
+        if (!currentUserDoc) {
+            const error = new Error('Current user not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        const isPasswordValid = await currentUserDoc.comparePassword(password);
+        if (!isPasswordValid) {
+            const error = new Error('Invalid password');
+            (error as any).status = 401;
+            throw error;
+        }
+
         // Permission checks based on roles
         if (currentUser.role === 'admin') {
             // Admin can adjust anyone's credit
         } else if (currentUser.role === 'super_distributor') {
-            // Super distributor can only adjust distributors, retailers, and users under them
             if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in super distributor's hierarchy
             const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -968,13 +954,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'distributor') {
-            // Distributor can only adjust retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in distributor's hierarchy
             const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -982,13 +966,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'retailer') {
-            // Retailer can only adjust users under them
             if (targetUser.role !== 'user') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in retailer's hierarchy
             const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -996,18 +978,29 @@ export class UserService {
                 throw error;
             }
         } else {
-            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
         }
 
-        // Adjust the credit
+        if (targetUser.creditBalance < amount) {
+            const error = new Error(`Insufficient credits. User has ${targetUser.creditBalance} credits but trying to subtract ${amount}.`);
+            (error as any).status = 400;
+            throw error;
+        }
+
+        // Subtract from target
         const updatedUser = await User.findByIdAndUpdate(
             userId,
-            { $inc: { creditBalance: amount } },
+            { $inc: { creditBalance: -amount } },
             { new: true }
         ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+
+        // Return the subtracted amount to the target's parent (skip if parent is admin)
+        const parentUser = targetUser.parentId ? await User.findById(targetUser.parentId) : null;
+        if (parentUser && parentUser.role !== 'admin') {
+            await User.findByIdAndUpdate(parentUser._id, { $inc: { creditBalance: amount } });
+        }
 
         return updatedUser!;
     }

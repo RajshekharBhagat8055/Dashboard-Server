@@ -41,6 +41,10 @@ import {
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
     getChildrenUnderDistributor,
+
+    // Credit context and logs
+    getCreditContext,
+    getCreditLogs,
 } from "../controllers/user.controller";
 
 const userRouter = Router();
@@ -77,6 +81,10 @@ userRouter.get('/hierarchy/super-distributors', getSuperDistributorsForHierarchy
 userRouter.get('/hierarchy/super-distributor/:superDistributorId/distributors', getDistributorsUnderSuperDistributor); // Get distributors under SD
 userRouter.get('/hierarchy/distributor/:distributorId/retailers', getRetailersUnderDistributor); // Get retailers under distributor
 userRouter.get('/hierarchy/distributor/:distributorId/children', getChildrenUnderDistributor); // Get retailers + users under distributor
+
+// ============ CREDIT CONTEXT & LOGS ============
+userRouter.get('/user/:id/credit-context', getCreditContext); // Get credit transfer context
+userRouter.get('/user/:id/credit-logs', getCreditLogs); // Get credit transaction logs
 
 // ============ INDIVIDUAL USER ENDPOINTS (comes last to avoid conflicts) ============
 userRouter.get('/user/:id', getUserById); // Get single user by ID
