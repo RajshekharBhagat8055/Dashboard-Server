@@ -5,6 +5,12 @@ import {
   buildDrawDateFilter,
   type ReportYmdRange,
 } from '../utils/reportDateRange';
+import {
+  DUS_KA_DUM_GAME_TYPE,
+  fetchDusAdminGameAggregate,
+  fetchDusGameHistoryRows,
+  fetchDusPlayWinByUser,
+} from './dusKaDumReport.service';
 
 type UserRole = 'admin' | 'super_distributor' | 'distributor' | 'retailer' | 'user';
 
@@ -339,6 +345,11 @@ export class ReportService {
         ticketUserIdGroupStage,
       ]).toArray();
 
+      const dusByUser = await fetchDusPlayWinByUser({
+        userIds: [...playerToChildNode.keys()],
+        dateFilter,
+      });
+
       // Accumulate per child-node: play/win + all three commission tiers from each leaf's rate chain
       type NodeBucket = {
         play: number; win: number;
@@ -351,16 +362,15 @@ export class ReportService {
         bucketByNode.set(n._id.toString(), { play: 0, win: 0, retailer_commission: 0, distributor_commission: 0, super_commission: 0 });
       }
 
-      for (const t of ticketAgg) {
-        const leafId = String(t._id);
+      const applyLeafPlayWin = (leafId: string, play: number, win: number) => {
+        if (play <= 0 && win <= 0) return;
         const nodeId = playerToChildNode.get(leafId);
-        if (!nodeId) continue;
+        if (!nodeId) return;
         const bucket = bucketByNode.get(nodeId);
-        if (!bucket) continue;
+        if (!bucket) return;
 
-        const play = Number(t.playPoint || 0);
         bucket.play += play;
-        bucket.win += Number(t.winPoint || 0);
+        bucket.win += win;
 
         // Always compute commissions from the leaf's own rate chain (backtracking)
         const meta = leafMetaMap.get(leafId);
@@ -370,9 +380,16 @@ export class ReportService {
         const sdId = meta?.superDistributorId ?? (dtId ? distributorToSDMap.get(dtId) : undefined);
         const sdRate = sdId ? (ancestorRateMap.get(sdId) ?? 0) : 0;
 
-        bucket.retailer_commission    += (play * leafRate) / 100;
+        bucket.retailer_commission += (play * leafRate) / 100;
         bucket.distributor_commission += (play * Math.max(0, dtRate - leafRate)) / 100;
-        bucket.super_commission       += (play * Math.max(0, sdRate - dtRate)) / 100;
+        bucket.super_commission += (play * Math.max(0, sdRate - dtRate)) / 100;
+      };
+
+      for (const t of ticketAgg) {
+        applyLeafPlayWin(String(t._id), Number(t.playPoint || 0), Number(t.winPoint || 0));
+      }
+      for (const dus of dusByUser.values()) {
+        applyLeafPlayWin(dus.userId, dus.playPoint, dus.winPoint);
       }
 
       const normalizedSearch = opts?.search?.trim().toLowerCase();
@@ -407,7 +424,7 @@ export class ReportService {
     }
 
     // Flat scoped report (retailer/user role, or when no drill-down filter applies)
-    const { scopedTicketUserIds, userMap } = await getScopedUsers(currentUser);
+    const { scopedTicketUserIds, scopedUserIdStrings, userMap } = await getScopedUsers(currentUser);
     if (!scopedTicketUserIds.length) {
       return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
     }
@@ -434,6 +451,40 @@ export class ReportService {
       { $sort: { playPoint: -1 } },
     ]).toArray();
 
+    const dusByUser = await fetchDusPlayWinByUser({
+      userIds: scopedUserIdStrings,
+      dateFilter,
+    });
+
+    const mergedByUser = new Map<string, { userId: string; playPoint: number; winPoint: number; endPoint: number }>();
+    for (const row of rows) {
+      const userId = String(row.userId);
+      const playPoint = Number(row.playPoint || 0);
+      const winPoint = Number(row.winPoint || 0);
+      mergedByUser.set(userId, {
+        userId,
+        playPoint,
+        winPoint,
+        endPoint: playPoint - winPoint,
+      });
+    }
+    for (const dus of dusByUser.values()) {
+      const existing = mergedByUser.get(dus.userId);
+      if (existing) {
+        existing.playPoint += dus.playPoint;
+        existing.winPoint += dus.winPoint;
+        existing.endPoint = existing.playPoint - existing.winPoint;
+      } else {
+        mergedByUser.set(dus.userId, {
+          userId: dus.userId,
+          playPoint: dus.playPoint,
+          winPoint: dus.winPoint,
+          endPoint: dus.playPoint - dus.winPoint,
+        });
+      }
+    }
+    const mergedRows = [...mergedByUser.values()].sort((a, b) => b.playPoint - a.playPoint);
+
     // Build ancestor rate lookup for tiered commission calculation
     const flatAncestorIds = new Set<string>();
     for (const [, u] of userMap) {
@@ -453,7 +504,7 @@ export class ReportService {
     }
 
     const normalizedSearch = opts?.search?.trim().toLowerCase();
-    const enrichedRows = rows.map((row) => {
+    const enrichedRows = mergedRows.map((row) => {
       const user = getUserByTicketUserId(userMap, row.userId) as any;
       const play = Number(row.playPoint || 0);
       const nodeRate = Number(user?.commissionRate || 0);
@@ -574,7 +625,7 @@ export class ReportService {
   }
 
   static async getCommissionPayoutReport(currentUser: AuthUser, dateFilter: ReportDateFilter, roleFilter?: string, search?: string) {
-    const { users, scopedTicketUserIds } = await getScopedUsers(currentUser);
+    const { users, scopedTicketUserIds, scopedUserIdStrings } = await getScopedUsers(currentUser);
     if (!scopedTicketUserIds.length) {
       return { rows: [], totals: { totalBet: 0, totalCommission: 0 } };
     }
@@ -602,6 +653,14 @@ export class ReportService {
     const directTotals = new Map<string, number>();
     for (const row of totalsByUser) {
       directTotals.set(String(row._id), Number(row.totalBet || 0));
+    }
+
+    const dusByUser = await fetchDusPlayWinByUser({
+      userIds: scopedUserIdStrings,
+      dateFilter,
+    });
+    for (const dus of dusByUser.values()) {
+      directTotals.set(dus.userId, (directTotals.get(dus.userId) || 0) + dus.playPoint);
     }
 
     const rows = eligibleRows.map((user) => {
@@ -662,6 +721,18 @@ export class ReportService {
       { $sort: { totalBetPoint: -1 } },
     ]).toArray();
 
+    const dusAgg = await fetchDusAdminGameAggregate({ dateFilter });
+    if (dusAgg && (dusAgg.totalBetPoint > 0 || dusAgg.totalWonPoint > 0)) {
+      rows.push({
+        gameName: 'DUS-KA-DUM Game',
+        gameType: DUS_KA_DUM_GAME_TYPE,
+        totalBetPoint: dusAgg.totalBetPoint,
+        totalWonPoint: dusAgg.totalWonPoint,
+        commissionAmount: dusAgg.totalBetPoint - dusAgg.totalWonPoint,
+      });
+      rows.sort((a, b) => Number(b.totalBetPoint || 0) - Number(a.totalBetPoint || 0));
+    }
+
     const normalizedSearch = search?.trim().toLowerCase();
     const filteredRows = rows.filter((row) => !normalizedSearch || String(row.gameName).toLowerCase().includes(normalizedSearch));
 
@@ -707,150 +778,195 @@ export class ReportService {
       limit?: number;
     },
   ) {
-    const { scopedTicketUserIds } = await getScopedUsers(currentUser);
+    const { scopedTicketUserIds, scopedUserIdStrings, userMap } = await getScopedUsers(currentUser);
     if (!scopedTicketUserIds.length) {
       return { rows: [] as Array<Record<string, unknown>> };
     }
 
-    const matchStage: Record<string, unknown> = {
-      userId: { $in: scopedTicketUserIds },
-    };
-
-    if (options.exactDate && /^\d{4}-\d{2}-\d{2}$/.test(options.exactDate)) {
-      const exactClause = buildDrawDateFilter({ fromYmd: options.exactDate, toYmd: options.exactDate });
-      if (exactClause) Object.assign(matchStage, exactClause);
-    } else {
-      applyTicketDateFilter(matchStage, dateFilter);
-    }
-
     const normalizedGameType = options.gameType?.trim().toLowerCase();
-    if (normalizedGameType && normalizedGameType !== 'all') {
-      matchStage.gameType = normalizedGameType;
-    }
-
-    if (options.username?.trim()) {
-      matchStage.username = options.username.trim();
-    }
+    const includeSkill =
+      !normalizedGameType ||
+      normalizedGameType === 'all' ||
+      normalizedGameType === '2d' ||
+      normalizedGameType === '3d';
+    const includeDus =
+      !normalizedGameType ||
+      normalizedGameType === 'all' ||
+      normalizedGameType === DUS_KA_DUM_GAME_TYPE ||
+      normalizedGameType === 'dus_ka_dum' ||
+      normalizedGameType === 'duskadum';
 
     const limit = Math.min(500, Math.max(1, options.limit ?? 500));
-    const ticketCollection = getSkillGameDb().collection('tickets');
-    const tickets = await ticketCollection.find(matchStage)
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .toArray();
+    const skillRows: Array<Record<string, unknown>> = [];
 
-    const resultCollection = getSkillGameDb().collection('results');
-    const slotKeys = new Set<string>();
-    for (const ticket of tickets) {
-      if (ticket.status === 'result_pending') continue;
-      const drawDate = String(ticket.drawDate || '');
-      const drawTime = String(ticket.drawTime || '');
-      if (drawDate && drawTime) slotKeys.add(`${drawDate}|${drawTime}`);
-    }
+    if (includeSkill) {
+      const matchStage: Record<string, unknown> = {
+        userId: { $in: scopedTicketUserIds },
+      };
 
-    const gameTypeBySlot = new Map<string, string>();
-    for (const ticket of tickets) {
-      const drawDate = String(ticket.drawDate || '');
-      const drawTime = String(ticket.drawTime || '');
-      if (!drawDate || !drawTime) continue;
-      const key = `${drawDate}|${drawTime}`;
-      if (!gameTypeBySlot.has(key)) {
-        gameTypeBySlot.set(key, String(ticket.gameType || '2d'));
+      if (options.exactDate && /^\d{4}-\d{2}-\d{2}$/.test(options.exactDate)) {
+        const exactClause = buildDrawDateFilter({ fromYmd: options.exactDate, toYmd: options.exactDate });
+        if (exactClause) Object.assign(matchStage, exactClause);
+      } else {
+        applyTicketDateFilter(matchStage, dateFilter);
+      }
+
+      if (normalizedGameType === '2d' || normalizedGameType === '3d') {
+        matchStage.gameType = normalizedGameType;
+      }
+
+      if (options.username?.trim()) {
+        matchStage.username = options.username.trim();
+      }
+
+      const ticketCollection = getSkillGameDb().collection('tickets');
+      const tickets = await ticketCollection.find(matchStage)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .toArray();
+
+      const resultCollection = getSkillGameDb().collection('results');
+      const slotKeys = new Set<string>();
+      for (const ticket of tickets) {
+        if (ticket.status === 'result_pending') continue;
+        const drawDate = String(ticket.drawDate || '');
+        const drawTime = String(ticket.drawTime || '');
+        if (drawDate && drawTime) slotKeys.add(`${drawDate}|${drawTime}`);
+      }
+
+      const gameTypeBySlot = new Map<string, string>();
+      for (const ticket of tickets) {
+        const drawDate = String(ticket.drawDate || '');
+        const drawTime = String(ticket.drawTime || '');
+        if (!drawDate || !drawTime) continue;
+        const key = `${drawDate}|${drawTime}`;
+        if (!gameTypeBySlot.has(key)) {
+          gameTypeBySlot.set(key, String(ticket.gameType || '2d'));
+        }
+      }
+
+      const resultBySlot = new Map<string, string>();
+      await Promise.all(
+        Array.from(slotKeys).map(async (key) => {
+          const [drawDate, drawTime] = key.split('|');
+          const dateStart = new Date(`${drawDate}T00:00:00`);
+          const dateEnd = new Date(`${drawDate}T23:59:59.999`);
+          const resultDoc = await resultCollection.findOne({
+            time: drawTime,
+            date: { $gte: dateStart, $lte: dateEnd },
+            isPublished: true,
+          });
+          if (!resultDoc) {
+            resultBySlot.set(key, `${drawDate} ${drawTime}`);
+            return;
+          }
+          const gameType = gameTypeBySlot.get(key) || '2d';
+          if (gameType === '3d' && resultDoc.results3D) {
+            const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
+            resultBySlot.set(key, `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`);
+            return;
+          }
+          const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
+          const first = filters[0] as { columns?: string[] } | undefined;
+          const sample = first?.columns?.[0];
+          resultBySlot.set(key, sample ? `${drawTime} · ${sample}` : `${drawDate} ${drawTime}`);
+        }),
+      );
+
+      for (const ticket of tickets) {
+        const playPoint = Number(ticket.totalPoint || 0);
+        const wonPoint = Number(ticket.winPoint || 0);
+        const drawDate = String(ticket.drawDate || '');
+        const drawTime = String(ticket.drawTime || '');
+        const slotKey = drawDate && drawTime ? `${drawDate}|${drawTime}` : '';
+        const status = ReportService.deriveTicketHistoryStatus({
+          status: ticket.status as string | undefined,
+          winPoint: ticket.winPoint as number | undefined,
+          claimed: ticket.claimed as boolean | undefined,
+        });
+        const gameResult =
+          status === 'No Result Declare'
+            ? null
+            : (slotKey ? resultBySlot.get(slotKey) ?? `${drawDate} ${drawTime}` : null);
+
+        skillRows.push({
+          id: ticket._id.toString(),
+          createdAt: ticket.createdAt,
+          username: String(ticket.username || ''),
+          gameType: String(ticket.gameType || '2d'),
+          gameId: String(ticket.gameId || ''),
+          ticketId: ticket._id.toString(),
+          barcode: String(ticket.barcode || ''),
+          drawDate,
+          drawTime,
+          playPoint,
+          wonPoint,
+          endPoint: playPoint - wonPoint,
+          gameResult,
+          status,
+          items: Array.isArray(ticket.items)
+            ? ticket.items.map((item: Record<string, unknown>) => ({
+              label: String(item.label || ''),
+              amount: Number(item.amount || 0),
+              seriesKey: String(item.seriesKey || ''),
+              seriesLetter: String(item.seriesLetter || ''),
+              format: item.format ? String(item.format) : undefined,
+            }))
+            : [],
+        });
       }
     }
 
-    const resultBySlot = new Map<string, string>();
-    await Promise.all(
-      Array.from(slotKeys).map(async (key) => {
-        const [drawDate, drawTime] = key.split('|');
-        const dateStart = new Date(`${drawDate}T00:00:00`);
-        const dateEnd = new Date(`${drawDate}T23:59:59.999`);
-        const resultDoc = await resultCollection.findOne({
-          time: drawTime,
-          date: { $gte: dateStart, $lte: dateEnd },
-          isPublished: true,
-        });
-        if (!resultDoc) {
-          resultBySlot.set(key, `${drawDate} ${drawTime}`);
-          return;
-        }
-        const gameType = gameTypeBySlot.get(key) || '2d';
-        if (gameType === '3d' && resultDoc.results3D) {
-          const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
-          resultBySlot.set(key, `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`);
-          return;
-        }
-        const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
-        const first = filters[0] as { columns?: string[] } | undefined;
-        const sample = first?.columns?.[0];
-        resultBySlot.set(key, sample ? `${drawTime} · ${sample}` : `${drawDate} ${drawTime}`);
-      }),
-    );
+    let dusRows: Array<Record<string, unknown>> = [];
+    if (includeDus) {
+      const usernameByUserId = new Map<string, string>();
+      for (const [id, user] of userMap) {
+        usernameByUserId.set(id, user.username);
+      }
+      const fetched = await fetchDusGameHistoryRows({
+        userIds: scopedUserIdStrings,
+        usernameByUserId,
+        dateFilter,
+        exactDate: options.exactDate,
+        username: options.username,
+        search: options.search,
+        limit,
+      });
+      dusRows = fetched.map((row) => ({ ...row }));
+    }
 
     const normalizedSearch = options.search?.trim().toLowerCase();
-    const rows = tickets.map((ticket) => {
-      const playPoint = Number(ticket.totalPoint || 0);
-      const wonPoint = Number(ticket.winPoint || 0);
-      const drawDate = String(ticket.drawDate || '');
-      const drawTime = String(ticket.drawTime || '');
-      const slotKey = drawDate && drawTime ? `${drawDate}|${drawTime}` : '';
-      const status = ReportService.deriveTicketHistoryStatus({
-        status: ticket.status as string | undefined,
-        winPoint: ticket.winPoint as number | undefined,
-        claimed: ticket.claimed as boolean | undefined,
-      });
-      const gameResult =
-        status === 'No Result Declare'
-          ? null
-          : (slotKey ? resultBySlot.get(slotKey) ?? `${drawDate} ${drawTime}` : null);
+    const merged = [...skillRows, ...dusRows]
+      .filter((row) => {
+        if (!normalizedSearch) return true;
+        // Dus rows are already search-filtered in fetchDusGameHistoryRows
+        if (row.gameType === DUS_KA_DUM_GAME_TYPE) return true;
+        const hay = [
+          row.username,
+          row.gameType,
+          row.gameId,
+          row.ticketId,
+          row.barcode,
+          row.status,
+          row.drawDate,
+          row.drawTime,
+          row.gameResult,
+          String(row.playPoint),
+          String(row.wonPoint),
+          String(row.endPoint),
+        ]
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(normalizedSearch);
+      })
+      .sort((a, b) => {
+        const at = new Date(String(a.createdAt || 0)).getTime();
+        const bt = new Date(String(b.createdAt || 0)).getTime();
+        return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+      })
+      .slice(0, limit);
 
-      return {
-        id: ticket._id.toString(),
-        createdAt: ticket.createdAt,
-        username: String(ticket.username || ''),
-        gameType: String(ticket.gameType || '2d'),
-        gameId: String(ticket.gameId || ''),
-        ticketId: ticket._id.toString(),
-        barcode: String(ticket.barcode || ''),
-        drawDate,
-        drawTime,
-        playPoint,
-        wonPoint,
-        endPoint: playPoint - wonPoint,
-        gameResult,
-        status,
-        items: Array.isArray(ticket.items)
-          ? ticket.items.map((item: Record<string, unknown>) => ({
-            label: String(item.label || ''),
-            amount: Number(item.amount || 0),
-            seriesKey: String(item.seriesKey || ''),
-            seriesLetter: String(item.seriesLetter || ''),
-            format: item.format ? String(item.format) : undefined,
-          }))
-          : [],
-      };
-    }).filter((row) => {
-      if (!normalizedSearch) return true;
-      const hay = [
-        row.username,
-        row.gameType,
-        row.gameId,
-        row.ticketId,
-        row.barcode,
-        row.status,
-        row.drawDate,
-        row.drawTime,
-        row.gameResult,
-        String(row.playPoint),
-        String(row.wonPoint),
-        String(row.endPoint),
-      ]
-        .join(' ')
-        .toLowerCase();
-      return hay.includes(normalizedSearch);
-    });
-
-    return { rows };
+    return { rows: merged };
   }
 
   static async previewDeleteGameHistory(
@@ -882,8 +998,8 @@ export class ReportService {
       confirmToken,
       message:
         previewCount > 0
-          ? `This will delete ${previewCount} ticket records.`
-          : 'No records found for this range.',
+          ? `This will delete ${previewCount} skill-game (2d/3d) ticket records. Dus Ka Dum tickets are not deleted.`
+          : 'No skill-game records found for this range. Dus Ka Dum tickets are not included in delete.',
     };
   }
 

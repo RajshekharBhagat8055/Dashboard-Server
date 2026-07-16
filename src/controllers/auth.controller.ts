@@ -696,4 +696,69 @@ const getSkillGameToken = async (req: Request, res: Response) => {
   }
 };
 
-export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken };
+// Get Dus Ka Dum game token for current authenticated admin user
+const getDusKaDumToken = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required"
+      });
+    }
+
+    const allowedRoles = ['admin', 'super_distributor', 'distributor', 'retailer'];
+    if (!req.user?.role || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({
+        success: false,
+        message: "Access denied."
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (!user.isActive || user.isBanned) {
+      return res.status(401).json({ success: false, message: "Account is inactive or banned" });
+    }
+
+    const JWT_ACCESS_SECRET: jwt.Secret = process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
+    const JWT_ACCESS_EXPIRE = process.env.JWT_ACCESS_EXPIRE || '15m';
+
+    const accessToken = jwt.sign(
+      {
+        userId: user._id.toString(),
+        username: user.username,
+        role: user.role,
+        uniqueId: user.uniqueId,
+        wallet: user.creditBalance ?? 0,
+      },
+      JWT_ACCESS_SECRET,
+      { expiresIn: JWT_ACCESS_EXPIRE } as jwt.SignOptions
+    );
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        accessToken,
+        user: {
+          id: user._id.toString(),
+          username: user.username,
+          role: user.role,
+          wallet: user.creditBalance ?? 0,
+        }
+      }
+    });
+  } catch (error) {
+    console.error("Get Dus Ka Dum token error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
+  }
+};
+
+export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken, getDusKaDumToken };
