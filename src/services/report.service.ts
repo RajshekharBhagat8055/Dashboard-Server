@@ -273,8 +273,10 @@ export class ReportService {
       nodeFilter = this.buildDrillDownScopeFilter(currentUser, undefined, opts?.childRole);
     }
 
+    // retailer/user (or any role with no drill-down children): flat report scoped to
+    // the current user's own subtree, one row per leaf ticket-user (self + own players).
     if (!nodeFilter) {
-      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+      return this.getFlatTurnoverReport(currentUser, range, generatedAt);
     }
 
     const childNodes = await User.find(nodeFilter)
@@ -434,6 +436,113 @@ export class ReportService {
           retailer_commission_rate: retailerRate,
           distributor_commission_rate: distributorRate,
           super_commission_rate: superRate,
+          retailer_commission_amount: retailerAmount,
+          distributor_commission_amount: distributorAmount,
+          super_commission_amount: superAmount
+        };
+      })
+      .filter((r): r is NonNullable<typeof r> => r !== null)
+      .sort((a, b) => b.play_amount - a.play_amount);
+
+    return { success: true as const, data: { report }, generatedAt };
+  }
+
+  /**
+   * Flat turnover report scoped to the current user's own subtree (self + own players),
+   * one row per leaf ticket-user. Used when no node-based drill-down applies
+   * (retailer/user roles), matching skill-game-admin-backend's fallback behavior.
+   */
+  private static async getFlatTurnoverReport(
+    currentUser: ReportCurrentUser,
+    range: ReportDateRange | undefined,
+    generatedAt: string
+  ) {
+    const subtreeFilter = this.buildSubtreeScopeFilter(currentUser);
+    const scopedUsers = await User.find(subtreeFilter)
+      .select('_id username role commissionRate distributorId superDistributorId')
+      .lean();
+
+    if (scopedUsers.length === 0) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
+
+    const scopedIds = scopedUsers.map((u) => u._id as mongoose.Types.ObjectId);
+    const ticketMatch = this.buildTicketMatch(scopedIds, range);
+
+    const ticketAgg = await getTicketModel().aggregate<{
+      _id: mongoose.Types.ObjectId;
+      playPoints: number;
+      winPoints: number;
+    }>([
+      { $match: ticketMatch },
+      {
+        $group: {
+          _id: '$userId',
+          playPoints: { $sum: '$totalPoint' },
+          winPoints: { $sum: '$winPoint' }
+        }
+      },
+      { $match: { playPoints: { $gt: 0 } } }
+    ]);
+
+    if (ticketAgg.length === 0) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
+
+    const userMap = new Map(scopedUsers.map((u) => [String(u._id), u]));
+
+    const ancestorIds = new Set<string>();
+    for (const u of scopedUsers) {
+      if (u.distributorId) ancestorIds.add(String(u.distributorId));
+      if (u.superDistributorId) ancestorIds.add(String(u.superDistributorId));
+    }
+    const ancestorRateMap = new Map<string, number>();
+    if (ancestorIds.size > 0) {
+      const ancestors = await User.find({ _id: { $in: [...ancestorIds].map((id) => this.oid(id)) } })
+        .select('_id commissionRate')
+        .lean();
+      for (const a of ancestors) ancestorRateMap.set(String(a._id), a.commissionRate ?? 0);
+    }
+
+    const report = ticketAgg
+      .map((row) => {
+        const user = userMap.get(String(row._id));
+        if (!user) return null;
+        const play = row.playPoints ?? 0;
+        const win = row.winPoints ?? 0;
+        const nodeRate = user.commissionRate ?? 0;
+        const role = user.role;
+
+        let retailerAmount = 0;
+        let distributorAmount = 0;
+        let superAmount = 0;
+
+        if (role === 'retailer' || role === 'user') {
+          const dtRate = user.distributorId ? ancestorRateMap.get(String(user.distributorId)) ?? 0 : 0;
+          const sdRate = user.superDistributorId ? ancestorRateMap.get(String(user.superDistributorId)) ?? 0 : 0;
+          retailerAmount = (play * nodeRate) / 100;
+          distributorAmount = (play * Math.max(0, dtRate - nodeRate)) / 100;
+          superAmount = (play * Math.max(0, sdRate - dtRate)) / 100;
+        } else if (role === 'distributor') {
+          const sdRate = user.superDistributorId ? ancestorRateMap.get(String(user.superDistributorId)) ?? 0 : 0;
+          distributorAmount = (play * nodeRate) / 100;
+          superAmount = (play * Math.max(0, sdRate - nodeRate)) / 100;
+        } else if (role === 'super_distributor') {
+          superAmount = (play * nodeRate) / 100;
+        }
+
+        return {
+          id: String(user._id),
+          username: user.username,
+          role,
+          play_amount: play,
+          win_amount: win,
+          claim_amount: 0,
+          unclaim_amount: 0,
+          end_amount: play - win,
+          retailer_commission_rate: play > 0 ? (retailerAmount / play) * 100 : 0,
+          distributor_commission_rate: play > 0 ? (distributorAmount / play) * 100 : 0,
+          super_commission_rate: play > 0 ? (superAmount / play) * 100 : 0,
           retailer_commission_amount: retailerAmount,
           distributor_commission_amount: distributorAmount,
           super_commission_amount: superAmount
