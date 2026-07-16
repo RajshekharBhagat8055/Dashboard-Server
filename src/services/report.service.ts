@@ -74,24 +74,6 @@ export class ReportService {
     return { _id: { $in: [] } };
   }
 
-  private static buildCommissionNodeScopeFilter(currentUser: ReportCurrentUser): Record<string, unknown> {
-    const { role, _id } = currentUser;
-    const id = this.oid(_id);
-    if (role === 'admin') {
-      return { role: { $in: ['super_distributor', 'distributor', 'retailer'] } };
-    }
-    if (role === 'super_distributor') {
-      return { superDistributorId: id, role: { $in: ['distributor', 'retailer'] } };
-    }
-    if (role === 'distributor') {
-      return { distributorId: id, role: 'retailer' };
-    }
-    if (role === 'retailer') {
-      return { _id: id };
-    }
-    return { _id: { $in: [] } };
-  }
-
   private static buildSubtreeScopeFilter(currentUser: ReportCurrentUser): Record<string, unknown> {
     const { role, _id } = currentUser;
     const id = this.oid(_id);
@@ -308,7 +290,7 @@ export class ReportService {
 
     // Players are 'user' or 'retailer' role descendants of these child nodes
     const allPlayerDocs = await User.find({ role: { $in: ['user', 'retailer'] } })
-      .select('_id role superDistributorId distributorId retailerId parentId')
+      .select('_id role commissionRate superDistributorId distributorId retailerId createdBy parentId')
       .lean();
 
     // Map player -> which child node they belong to
@@ -316,15 +298,17 @@ export class ReportService {
     const childNodeIdStrings = new Set(childNodeIds.map((id) => String(id)));
 
     for (const player of allPlayerDocs) {
-      // Walk up the hierarchy to find which child node this player belongs to
       const pId = String(player._id);
       if (childNodeIdStrings.has(pId)) {
         playerToChildNode.set(pId, pId);
         continue;
       }
-      // Check direct refs first
       if (player.retailerId && childNodeIdStrings.has(String(player.retailerId))) {
         playerToChildNode.set(pId, String(player.retailerId));
+        continue;
+      }
+      if (player.createdBy && childNodeIdStrings.has(String(player.createdBy))) {
+        playerToChildNode.set(pId, String(player.createdBy));
         continue;
       }
       if (player.distributorId && childNodeIdStrings.has(String(player.distributorId))) {
@@ -409,9 +393,12 @@ export class ReportService {
       const player = playerMap.get(String(t._id));
       const play = t.playPoints ?? 0;
 
-      const retailerRate = player?.role === 'retailer'
+      // Use the leaf's own commission rate (same approach as skill-game-admin-backend)
+      const leafRate = player?.role === 'retailer'
         ? rateMap.get(String(player._id)) ?? 0
-        : (player?.retailerId ? rateMap.get(String(player.retailerId)) ?? 0 : 0);
+        : (player?.retailerId
+          ? rateMap.get(String(player.retailerId)) ?? 0
+          : (player?.commissionRate ?? 0));
       const distributorRate = player?.distributorId ? rateMap.get(String(player.distributorId)) ?? 0 : 0;
       const superRate = player?.superDistributorId ? rateMap.get(String(player.superDistributorId)) ?? 0 : 0;
 
@@ -419,9 +406,9 @@ export class ReportService {
       bucket.win += t.winPoints ?? 0;
       bucket.claim += t.claimPoints ?? 0;
       bucket.unclaim += t.unclaimPoints ?? 0;
-      bucket.retailerAmount += play * (Math.max(retailerRate, 0) / 100);
-      bucket.distributorAmount += play * (Math.max(distributorRate, 0) / 100);
-      bucket.superAmount += play * (Math.max(superRate, 0) / 100);
+      bucket.retailerAmount += (play * Math.max(leafRate, 0)) / 100;
+      bucket.distributorAmount += (play * Math.max(0, distributorRate - leafRate)) / 100;
+      bucket.superAmount += (play * Math.max(0, superRate - distributorRate)) / 100;
     }
 
     const report = childNodes
@@ -587,93 +574,51 @@ export class ReportService {
     };
   }
 
-  /** Commission payout: sum Ticket.totalPoint for subordinate players (same scope as turnover), optional date range */
+  /** Commission payout: each eligible user's own direct ticket total × their own commissionRate (same approach as skill-game-admin-backend). */
   static async getCommissionPayoutReport(currentUser: ReportCurrentUser, range?: ReportDateRange) {
-    const filter = this.buildCommissionNodeScopeFilter(currentUser);
-    const nodes = await User.find(filter)
-      .select('_id username uniqueId role commissionRate totalCommissionEarned')
+    const subtreeFilter = this.buildSubtreeScopeFilter(currentUser);
+    const scopedUsers = await User.find(subtreeFilter)
+      .select('_id username role commissionRate')
       .lean();
 
-    const playerIds = await this.getScopedPlayerIds(currentUser);
-    if (playerIds.length === 0) {
-      const reportEmpty = nodes.map((n) => ({
-        id: String(n._id),
-        username: n.username,
-        role: n.role,
-        commission_rate: n.commissionRate ?? 0,
-        total_bet: 0,
-        commission_earned: 0
-      }));
+    if (scopedUsers.length === 0) {
       return {
         success: true as const,
-        data: { report: reportEmpty },
+        data: { report: [] as Record<string, unknown>[] },
         generatedAt: new Date().toISOString()
       };
     }
 
-    const ticketMatch = this.buildTicketMatch(playerIds, range);
+    const payoutRoles = new Set(['super_distributor', 'distributor', 'retailer']);
+    const eligibleUsers = scopedUsers.filter((u) => payoutRoles.has(u.role));
 
-    const sdIds = nodes.filter((n) => n.role === 'super_distributor').map((n) => n._id);
-    const distributorIds = nodes.filter((n) => n.role === 'distributor').map((n) => n._id);
-    const retailerIds = nodes.filter((n) => n.role === 'retailer').map((n) => n._id);
+    const scopedIds = scopedUsers.map((u) => u._id as mongoose.Types.ObjectId);
+    const ticketMatch = this.buildTicketMatch(scopedIds, range);
 
-    const playBySd = new Map<string, number>();
-    const playByDist = new Map<string, number>();
-    const playByRet = new Map<string, number>();
-
-    const byUserPlay = await getTicketModel().aggregate<{
+    const totalsByUser = await getTicketModel().aggregate<{
       _id: mongoose.Types.ObjectId;
-      totalPlayPoints: number;
-    }>([{ $match: ticketMatch }, { $group: { _id: '$userId', totalPlayPoints: { $sum: '$totalPoint' } } }]);
+      totalBet: number;
+    }>([{ $match: ticketMatch }, { $group: { _id: '$userId', totalBet: { $sum: '$totalPoint' } } }]);
 
-    const ticketUserIds = byUserPlay.map((b) => b._id);
-    const usersForTickets = await User.find({ _id: { $in: ticketUserIds } })
-      .select('_id role superDistributorId distributorId retailerId')
-      .lean();
-    const ticketUserMap = new Map(usersForTickets.map((u) => [String(u._id), u]));
-
-    const sdSet = new Set(sdIds.map((id) => String(id)));
-    const distSet = new Set(distributorIds.map((id) => String(id)));
-    const retSet = new Set(retailerIds.map((id) => String(id)));
-
-    for (const row of byUserPlay) {
-      const u = ticketUserMap.get(String(row._id));
-      if (!u || !['user', 'retailer'].includes(u.role)) continue;
-      const tp = row.totalPlayPoints ?? 0;
-      if (u.superDistributorId && sdSet.has(String(u.superDistributorId))) {
-        const k = String(u.superDistributorId);
-        playBySd.set(k, (playBySd.get(k) ?? 0) + tp);
-      }
-      if (u.distributorId && distSet.has(String(u.distributorId))) {
-        const k = String(u.distributorId);
-        playByDist.set(k, (playByDist.get(k) ?? 0) + tp);
-      }
-      if (u.role === 'user' && u.retailerId && retSet.has(String(u.retailerId))) {
-        const k = String(u.retailerId);
-        playByRet.set(k, (playByRet.get(k) ?? 0) + tp);
-      }
+    const directTotals = new Map<string, number>();
+    for (const row of totalsByUser) {
+      directTotals.set(String(row._id), Number(row.totalBet || 0));
     }
 
-    const rows = nodes.map((n) => {
-      let subPlay = 0;
-      if (n.role === 'super_distributor') subPlay = playBySd.get(String(n._id)) ?? 0;
-      else if (n.role === 'distributor') subPlay = playByDist.get(String(n._id)) ?? 0;
-      else if (n.role === 'retailer') subPlay = playByRet.get(String(n._id)) ?? 0;
-
+    const rows = eligibleUsers.map((n) => {
+      const totalBet = directTotals.get(String(n._id)) ?? 0;
       const rate = n.commissionRate ?? 0;
-      const commissionEarned = subPlay * (rate / 100);
-
       return {
         id: String(n._id),
         username: n.username,
         role: n.role,
         commission_rate: rate,
-        total_bet: subPlay,
-        commission_earned: commissionEarned
+        total_bet: totalBet,
+        commission_earned: (totalBet * rate) / 100
       };
     });
 
-    rows.sort((a, b) => b.total_bet - a.total_bet);
+    rows.sort((a, b) => b.commission_earned - a.commission_earned);
 
     return {
       success: true as const,
