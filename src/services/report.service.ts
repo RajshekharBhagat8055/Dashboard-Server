@@ -10,6 +10,7 @@ import {
   fetchDusAdminGameAggregate,
   fetchDusGameHistoryRows,
   fetchDusPlayWinByUser,
+  fetchDusWalletTransactions,
 } from './dusKaDumReport.service';
 
 type UserRole = 'admin' | 'super_distributor' | 'distributor' | 'retailer' | 'user';
@@ -558,7 +559,7 @@ export class ReportService {
     dateFilter: ReportDateFilter,
     options: { search?: string; type?: string; page: number; limit: number },
   ) {
-    const { scopedUserObjectIds, userMap } = await getScopedUsers(currentUser);
+    const { scopedUserObjectIds, scopedUserIdStrings, userMap } = await getScopedUsers(currentUser);
     if (!scopedUserObjectIds.length) {
       return { transactions: [], total: 0, page: options.page, limit: options.limit };
     }
@@ -595,17 +596,22 @@ export class ReportService {
       ];
     }
 
+    // Two independent stores (Mongo transactions + Postgres wallet_log) can't be
+    // paginated with a single DB-level skip/limit, so both sides are fetched up to
+    // MERGE_CAP, merged in memory, and re-sliced for the requested page. This is
+    // exact for the common date-filtered case; for very large unfiltered ranges
+    // (more than MERGE_CAP rows on either side) deep pages may undercount.
+    const MERGE_CAP = 2000;
     const transactionCollection = getSkillGameDb().collection('transactions');
-    const total = await transactionCollection.countDocuments(query);
+    const mongoTotal = await transactionCollection.countDocuments(query);
     const skip = (options.page - 1) * options.limit;
 
     const transactions = await transactionCollection.find(query)
       .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(options.limit)
+      .limit(MERGE_CAP)
       .toArray();
 
-    const rows = transactions.map((tx) => ({
+    const skillRows = transactions.map((tx) => ({
       id: tx._id.toString(),
       userId: String(tx.destination?.userId || tx.source?.userId || ''),
       username:
@@ -620,6 +626,24 @@ export class ReportService {
       createdAt: tx.createdAt,
       description: String(tx.metadata?.reason || tx.type || ''),
     }));
+
+    const usernameByUserId = new Map<string, string>();
+    for (const [id, user] of userMap) usernameByUserId.set(id, user.username);
+
+    const dusRows = await fetchDusWalletTransactions({
+      userIds: scopedUserIdStrings,
+      usernameByUserId,
+      dateFilter,
+      types: typeFilter ?? undefined,
+      search: options.search,
+      limit: MERGE_CAP,
+    });
+
+    const merged = [...skillRows, ...dusRows].sort(
+      (a, b) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime(),
+    );
+    const total = mongoTotal + dusRows.length;
+    const rows = merged.slice(skip, skip + options.limit);
 
     return { transactions: rows, total, page: options.page, limit: options.limit };
   }

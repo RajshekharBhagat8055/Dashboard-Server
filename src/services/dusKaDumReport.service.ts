@@ -305,6 +305,125 @@ export async function fetchDusPlayWinByUser(options: {
   return result;
 }
 
+export interface DusTransactionRow {
+  id: string;
+  userId: string;
+  username: string;
+  type: string;
+  amount: number;
+  balanceAfter: number;
+  createdAt: Date | string | null;
+  description: string;
+}
+
+interface DusWalletSqlRow {
+  id: string;
+  user_id: string;
+  type: string;
+  amount: string | number;
+  balance_after: string | number | null;
+  created_at: Date | string | null;
+  ticket_id: string | null;
+}
+
+/**
+ * Map wallet_log's lowercase event types onto the uppercase transaction-type
+ * vocabulary skill_game_server already writes to Mongo (BET_PLACEMENT,
+ * WINNING_PAYOUT, ...) so a merged Transaction Report behaves consistently.
+ */
+function mapDusWalletType(type: string): string {
+  switch (type) {
+    case 'bet':
+      return 'BET_PLACEMENT';
+    case 'bet_cancel':
+      return 'BET_REFUND';
+    case 'claim':
+    case 'claim_all':
+      return 'WINNING_PAYOUT';
+    default:
+      return type.toUpperCase();
+  }
+}
+
+function dusWalletDescription(type: string, ticketId: string | null): string {
+  const suffix = ticketId ? ` (Dus Ka Dum ${ticketId})` : ' (Dus Ka Dum)';
+  switch (type) {
+    case 'bet':
+      return `Game Bet${suffix}`;
+    case 'bet_cancel':
+      return `Bet Cancel Refund${suffix}`;
+    case 'claim':
+      return `Claim${suffix}`;
+    case 'claim_all':
+      return `Claim All${suffix}`;
+    default:
+      return `${type}${suffix}`;
+  }
+}
+
+export async function fetchDusWalletTransactions(options: {
+  userIds: string[];
+  usernameByUserId: Map<string, string>;
+  dateFilter?: ReportYmdRange;
+  types?: string[];
+  search?: string;
+  limit?: number;
+}): Promise<DusTransactionRow[]> {
+  if (!isDusKaDumDbConfigured() || !options.userIds.length) return [];
+
+  const range = buildCreatedAtRange(options.dateFilter);
+  const limit = Math.min(2000, Math.max(1, options.limit ?? 2000));
+  const params: unknown[] = [options.userIds];
+  let paramIdx = 2;
+
+  let sql = `
+    SELECT id::text AS id, user_id, type, amount, balance_after, created_at, ticket_id
+    FROM wallet_log
+    WHERE user_id = ANY($1::text[])
+  `;
+
+  if (range.from) {
+    sql += ` AND created_at >= $${paramIdx}`;
+    params.push(range.from);
+    paramIdx += 1;
+  }
+  if (range.to) {
+    sql += ` AND created_at <= $${paramIdx}`;
+    params.push(range.to);
+    paramIdx += 1;
+  }
+
+  sql += ` ORDER BY created_at DESC LIMIT $${paramIdx}`;
+  params.push(limit);
+
+  const rows = await dusKaDumQuery<DusWalletSqlRow>(sql, params);
+  const normalizedSearch = options.search?.trim().toLowerCase();
+  const typeFilter = options.types?.length ? new Set(options.types) : null;
+
+  return rows
+    .map((row) => {
+      const username = options.usernameByUserId.get(row.user_id) || '';
+      const mappedType = mapDusWalletType(row.type);
+      const mapped: DusTransactionRow = {
+        id: row.id,
+        userId: row.user_id,
+        username,
+        type: mappedType,
+        amount: Math.abs(toNumber(row.amount)),
+        balanceAfter: toNumber(row.balance_after),
+        createdAt: row.created_at,
+        description: dusWalletDescription(row.type, row.ticket_id),
+      };
+      return mapped;
+    })
+    .filter((row) => !typeFilter || typeFilter.has(row.type))
+    .filter((row) => {
+      if (!normalizedSearch) return true;
+      const hay = [row.username, row.type, row.description].join(' ').toLowerCase();
+      return hay.includes(normalizedSearch);
+    });
+}
+
 export async function fetchDusAdminGameAggregate(options: {
   dateFilter?: ReportYmdRange;
 }): Promise<{ totalBetPoint: number; totalWonPoint: number } | null> {
