@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken } from "../controllers/auth.controller";
+import { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken, getDusKaDumToken } from "../controllers/auth.controller";
 import { authenticate } from "../middleware/auth";
 import { logAction, logFailedLogin } from "../middleware/logging";
 
@@ -18,5 +18,6 @@ authRouter.get('/profile', ...authenticatedAndLogged, getProfile);
 authRouter.post('/change-password', ...authenticatedAndLogged, changePassword);
 authRouter.post('/users', ...authenticatedAndLogged, createUser);
 authRouter.get('/skill-game-token', authenticate, getSkillGameToken); // No logging needed for token generation
+authRouter.get('/dus-ka-dum-token', authenticate, getDusKaDumToken); // No logging needed for token generation
 
 export default authRouter;

@@ -3,6 +3,7 @@ import mongoose from "mongoose"
 const connectDB = async(): Promise<void> => {
     if (mongoose.connection.readyState >= 1) {
         console.log("MongoDB is already connected");
+        return;
     }
 
     try {

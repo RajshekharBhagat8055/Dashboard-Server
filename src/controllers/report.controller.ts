@@ -133,8 +133,7 @@ export const getGameHistory = async (req: Request, res: Response) => {
     }
 
     const gameTypeRaw = typeof req.query.game_type === 'string' ? req.query.game_type.trim().toLowerCase() : '';
-    const gameType =
-      gameTypeRaw === '2d' || gameTypeRaw === '3d' ? (gameTypeRaw as '2d' | '3d') : undefined;
+    const gameType = gameTypeRaw || undefined;
     const username =
       typeof req.query.username === 'string' && req.query.username.trim()
         ? req.query.username.trim()

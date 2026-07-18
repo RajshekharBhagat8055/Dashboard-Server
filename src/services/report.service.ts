@@ -4,6 +4,13 @@ import User from '../models/User';
 import Log, { type LogAction } from '../models/log.model';
 import { getTicketModel } from '../models/Ticket';
 import { buildCreatedAtMatch, buildDrawDateMatch, type ReportYmdRange } from '../utils/reportDateRange';
+import {
+  DUS_KA_DUM_GAME_TYPE,
+  fetchDusAdminGameAggregate,
+  fetchDusGameHistoryRows,
+  fetchDusPlayWinByUser,
+  fetchDusWalletTransactions,
+} from './dusKaDumReport.service';
 
 const REPORT_DELETE_JWT_SECRET =
   process.env.REPORT_DELETE_SECRET || process.env.JWT_ACCESS_SECRET || 'your-access-secret-key';
@@ -395,12 +402,13 @@ export class ReportService {
       const player = playerMap.get(String(t._id));
       const play = t.playPoints ?? 0;
 
-      // Use the leaf's own commission rate (same approach as skill-game-admin-backend)
+      // Retailer play earns the retailer tier at the retailer's own rate.
+      // Mobile players (role 'user') never generate retailer commission —
+      // their own rate is 0, so the full tier rolls up to the distributor
+      // (same as getFlatTurnoverReport).
       const leafRate = player?.role === 'retailer'
         ? rateMap.get(String(player._id)) ?? 0
-        : (player?.retailerId
-          ? rateMap.get(String(player.retailerId)) ?? 0
-          : (player?.commissionRate ?? 0));
+        : (player?.commissionRate ?? 0);
       const distributorRate = player?.distributorId ? rateMap.get(String(player.distributorId)) ?? 0 : 0;
       const superRate = player?.superDistributorId ? rateMap.get(String(player.superDistributorId)) ?? 0 : 0;
 
@@ -408,6 +416,38 @@ export class ReportService {
       bucket.win += t.winPoints ?? 0;
       bucket.claim += t.claimPoints ?? 0;
       bucket.unclaim += t.unclaimPoints ?? 0;
+      bucket.retailerAmount += (play * Math.max(leafRate, 0)) / 100;
+      bucket.distributorAmount += (play * Math.max(0, distributorRate - leafRate)) / 100;
+      bucket.superAmount += (play * Math.max(0, superRate - distributorRate)) / 100;
+    }
+
+    const dusByUser = await fetchDusPlayWinByUser({
+      userIds: [...playerToChildNode.keys()],
+      dateFilter: range
+    });
+    for (const dus of dusByUser.values()) {
+      const nodeId = playerToChildNode.get(dus.userId);
+      if (!nodeId) continue;
+      const bucket = playByNode.get(nodeId);
+      if (!bucket) continue;
+      const player = playerMap.get(dus.userId);
+      const play = dus.playPoint;
+      if (play <= 0 && dus.winPoint <= 0) continue;
+
+      // Same tier attribution as the ticket loop above: players' own rate
+      // (0 for mobile users) so no retailer tier is charged on their play.
+      const leafRate =
+        player?.role === 'retailer'
+          ? rateMap.get(String(player._id)) ?? 0
+          : (player?.commissionRate ?? 0);
+      const distributorRate = player?.distributorId ? rateMap.get(String(player.distributorId)) ?? 0 : 0;
+      const superRate = player?.superDistributorId
+        ? rateMap.get(String(player.superDistributorId)) ?? 0
+        : 0;
+
+      bucket.play += play;
+      bucket.win += dus.winPoint;
+      // Dus aggregate has no claim/unclaim split — leave those untouched
       bucket.retailerAmount += (play * Math.max(leafRate, 0)) / 100;
       bucket.distributorAmount += (play * Math.max(0, distributorRate - leafRate)) / 100;
       bucket.superAmount += (play * Math.max(0, superRate - distributorRate)) / 100;
@@ -485,11 +525,34 @@ export class ReportService {
       { $match: { playPoints: { $gt: 0 } } }
     ]);
 
-    if (ticketAgg.length === 0) {
-      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    const userMap = new Map(scopedUsers.map((u) => [String(u._id), u]));
+    const scopedUserIdStrings = scopedUsers.map((u) => String(u._id));
+
+    const dusByUser = await fetchDusPlayWinByUser({
+      userIds: scopedUserIdStrings,
+      dateFilter: range
+    });
+
+    const mergedByUser = new Map<string, { play: number; win: number }>();
+    for (const row of ticketAgg) {
+      mergedByUser.set(String(row._id), {
+        play: row.playPoints ?? 0,
+        win: row.winPoints ?? 0
+      });
+    }
+    for (const dus of dusByUser.values()) {
+      const existing = mergedByUser.get(dus.userId);
+      if (existing) {
+        existing.play += dus.playPoint;
+        existing.win += dus.winPoint;
+      } else {
+        mergedByUser.set(dus.userId, { play: dus.playPoint, win: dus.winPoint });
+      }
     }
 
-    const userMap = new Map(scopedUsers.map((u) => [String(u._id), u]));
+    if (mergedByUser.size === 0) {
+      return { success: true as const, data: { report: [] as Record<string, unknown>[] }, generatedAt };
+    }
 
     const ancestorIds = new Set<string>();
     for (const u of scopedUsers) {
@@ -504,12 +567,13 @@ export class ReportService {
       for (const a of ancestors) ancestorRateMap.set(String(a._id), a.commissionRate ?? 0);
     }
 
-    const report = ticketAgg
-      .map((row) => {
-        const user = userMap.get(String(row._id));
+    const report = [...mergedByUser.entries()]
+      .map(([userId, totals]) => {
+        const user = userMap.get(userId);
         if (!user) return null;
-        const play = row.playPoints ?? 0;
-        const win = row.winPoints ?? 0;
+        const play = totals.play;
+        const win = totals.win;
+        if (play <= 0) return null;
         const nodeRate = user.commissionRate ?? 0;
         const role = user.role;
 
@@ -563,8 +627,9 @@ export class ReportService {
     const skip = (page - 1) * limit;
 
     const subtreeFilter = this.buildSubtreeScopeFilter(currentUser);
-    const scopedUsers = await User.find(subtreeFilter).select('_id').lean();
+    const scopedUsers = await User.find(subtreeFilter).select('_id username uniqueId role').lean();
     let scopeIds = scopedUsers.map((u) => u._id as mongoose.Types.ObjectId);
+    let usernameByUserId = new Map(scopedUsers.map((u) => [String(u._id), u.username ?? '']));
 
     if (scopeIds.length === 0) {
       return {
@@ -585,9 +650,10 @@ export class ReportService {
         _id: { $in: scopeIds },
         username: rx
       })
-        .select('_id')
+        .select('_id username')
         .lean();
       scopeIds = matched.map((u) => u._id as mongoose.Types.ObjectId);
+      usernameByUserId = new Map(matched.map((u) => [String(u._id), u.username ?? '']));
       if (scopeIds.length === 0) {
         return {
           success: true as const,
@@ -627,19 +693,19 @@ export class ReportService {
       logQuery.createdAt = createdAt;
     }
 
-    const [total, logs] = await Promise.all([
+    // Mongo + Postgres wallet_log can't share one DB-level skip/limit; fetch both
+    // up to MERGE_CAP, merge in memory, then slice the requested page.
+    const MERGE_CAP = 2000;
+    const [mongoTotal, logs] = await Promise.all([
       Log.countDocuments(logQuery),
       Log.find(logQuery)
         .populate('userId', 'username uniqueId role')
         .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
+        .limit(MERGE_CAP)
         .lean()
     ]);
 
-    const totalPages = Math.ceil(total / limit) || 0;
-
-    const transactions = logs.map((log) => {
+    const mongoRows = logs.map((log) => {
       const populated = log.userId as unknown as {
         _id?: mongoose.Types.ObjectId;
         username?: string;
@@ -647,7 +713,7 @@ export class ReportService {
         role?: string;
       } | null;
       const mapped = this.mapTransactionDetails(log.details);
-      const createdAt =
+      const createdAtIso =
         log.createdAt instanceof Date ? log.createdAt.toISOString() : String(log.createdAt);
       const displayType = this.logActionToDisplayType(log.action);
       const amount = mapped.amount ?? 0;
@@ -657,7 +723,7 @@ export class ReportService {
         type: displayType,
         amount,
         balance_after: balanceAfter,
-        created_at: createdAt,
+        created_at: createdAtIso,
         username: populated?.username ?? '',
         unique_id: populated?.uniqueId ?? '',
         role: populated?.role ?? '',
@@ -671,6 +737,44 @@ export class ReportService {
       };
     });
 
+    // Only merge Dus wallet rows for filters that overlap Dus vocabulary
+    // (bet / win / all). Skip for hierarchy-only filters (transfer, claim_ticket, …).
+    const dusTypeFilter = this.dusWalletTypesForDisplayFilter(query.type);
+    let dusDisplayRows: Record<string, unknown>[] = [];
+    if (dusTypeFilter !== null) {
+      const dusRows = await fetchDusWalletTransactions({
+        userIds: scopeIds.map((id) => String(id)),
+        usernameByUserId,
+        dateFilter: { fromYmd: query.fromYmd, toYmd: query.toYmd },
+        types: dusTypeFilter,
+        search: query.search,
+        limit: MERGE_CAP
+      });
+      dusDisplayRows = dusRows.map((row) => ({
+        id: row.id,
+        type: this.mapDusTxTypeToDisplay(row.type),
+        amount: row.amount,
+        balance_after: row.balanceAfter,
+        created_at:
+          row.createdAt instanceof Date
+            ? row.createdAt.toISOString()
+            : row.createdAt
+              ? String(row.createdAt)
+              : null,
+        username: row.username,
+        description: row.description
+      }));
+    }
+
+    const merged = [...mongoRows, ...dusDisplayRows].sort((a, b) => {
+      const at = new Date(String(a.created_at || 0)).getTime();
+      const bt = new Date(String(b.created_at || 0)).getTime();
+      return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+    });
+    const total = mongoTotal + dusDisplayRows.length;
+    const totalPages = Math.ceil(total / limit) || 0;
+    const transactions = merged.slice(skip, skip + limit);
+
     return {
       success: true as const,
       data: {
@@ -681,6 +785,32 @@ export class ReportService {
         total_pages: totalPages
       }
     };
+  }
+
+  /** Map Dus wallet mapped-types (BET_PLACEMENT/…) onto mahalaxmi display vocabulary. */
+  private static mapDusTxTypeToDisplay(mappedType: string): string {
+    switch (mappedType) {
+      case 'BET_PLACEMENT':
+        return 'bet';
+      case 'WINNING_PAYOUT':
+        return 'win';
+      case 'BET_REFUND':
+        return 'bet_refund';
+      default:
+        return mappedType.toLowerCase();
+    }
+  }
+
+  /**
+   * Which Dus wallet mapped-types to fetch for a display-type filter.
+   * `undefined` = all Dus types; `null` = skip Dus entirely.
+   */
+  private static dusWalletTypesForDisplayFilter(type?: string): string[] | undefined | null {
+    if (!type || type === 'all') return undefined;
+    if (type === 'bet') return ['BET_PLACEMENT'];
+    if (type === 'win') return ['WINNING_PAYOUT'];
+    if (type === 'bet_refund') return ['BET_REFUND'];
+    return null;
   }
 
   /** Commission payout: each eligible user's own direct ticket total × their own commissionRate (same approach as skill-game-admin-backend). */
@@ -714,6 +844,14 @@ export class ReportService {
       directTotals.set(String(row._id), Number(row.totalBet || 0));
     }
 
+    const dusByUser = await fetchDusPlayWinByUser({
+      userIds: scopedUsers.map((u) => String(u._id)),
+      dateFilter: range
+    });
+    for (const dus of dusByUser.values()) {
+      directTotals.set(dus.userId, (directTotals.get(dus.userId) || 0) + dus.playPoint);
+    }
+
     const rows = eligibleUsers.map((n) => {
       const totalBet = directTotals.get(String(n._id)) ?? 0;
       const rate = n.commissionRate ?? 0;
@@ -736,7 +874,7 @@ export class ReportService {
     };
   }
 
-  /** Admin commission by game type (2d/3d), sai-lucky shape: `data.report[]`. */
+  /** Admin commission by game type (2d/3d + dus-ka-dum), sai-lucky shape: `data.report[]`. */
   static async getAdminCommissionReport(range?: ReportDateRange) {
     const playerDocs = await User.find({ role: { $in: ['user', 'retailer'] } }).select('_id').lean();
     const playerIds = playerDocs.map((d) => d._id as mongoose.Types.ObjectId);
@@ -781,6 +919,17 @@ export class ReportService {
       };
     });
 
+    const dusAgg = await fetchDusAdminGameAggregate({ dateFilter: range });
+    if (dusAgg && (dusAgg.totalBetPoint > 0 || dusAgg.totalWonPoint > 0)) {
+      report.push({
+        id: DUS_KA_DUM_GAME_TYPE,
+        game_name: 'DUS-KA-DUM Game',
+        total_bet_point: dusAgg.totalBetPoint,
+        total_won_point: dusAgg.totalWonPoint,
+        commission_amount: dusAgg.totalBetPoint - dusAgg.totalWonPoint
+      });
+    }
+
     return {
       success: true as const,
       data: { report },
@@ -806,11 +955,11 @@ export class ReportService {
     return 'loss';
   }
 
-  /** Per-ticket bet history (sai-lucky game-history shape, Skill Game tickets). */
+  /** Per-ticket bet history (sai-lucky game-history shape, Skill Game + Dus Ka Dum). */
   static async getGameHistory(
     currentUser: ReportCurrentUser,
     range?: ReportDateRange,
-    opts?: { gameType?: '2d' | '3d'; username?: string; limit?: number }
+    opts?: { gameType?: string; username?: string; limit?: number }
   ) {
     const playerIds = await this.getScopedPlayerIds(currentUser);
     if (playerIds.length === 0) {
@@ -821,48 +970,113 @@ export class ReportService {
       };
     }
 
-    const match = this.buildTicketMatch(playerIds, range);
-    if (opts?.gameType) {
-      match.gameType = opts.gameType;
-    }
-    if (opts?.username?.trim()) {
-      match.username = opts.username.trim();
-    }
+    const normalizedGameType = opts?.gameType?.trim().toLowerCase();
+    const includeSkill =
+      !normalizedGameType ||
+      normalizedGameType === 'all' ||
+      normalizedGameType === '2d' ||
+      normalizedGameType === '3d';
+    const includeDus =
+      !normalizedGameType ||
+      normalizedGameType === 'all' ||
+      normalizedGameType === DUS_KA_DUM_GAME_TYPE ||
+      normalizedGameType === 'dus_ka_dum' ||
+      normalizedGameType === 'duskadum';
 
     const limit = Math.min(1000, Math.max(1, opts?.limit ?? 500));
+    const skillRows: Record<string, unknown>[] = [];
 
-    const tickets = await getTicketModel()
-      .find(match)
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .lean();
+    if (includeSkill) {
+      const match = this.buildTicketMatch(playerIds, range);
+      if (normalizedGameType === '2d' || normalizedGameType === '3d') {
+        match.gameType = normalizedGameType;
+      }
+      if (opts?.username?.trim()) {
+        match.username = opts.username.trim();
+      }
 
-    const rows = tickets.map((t) => {
-      const playPoint = t.totalPoint ?? 0;
-      const wonPoint = t.winPoint ?? 0;
-      const hasResult = t.status !== 'result_pending';
-      return {
-        created_at: t.createdAt ? new Date(t.createdAt).toISOString() : null,
-        username: t.username ?? '',
-        game_type: t.gameType ?? '2d',
-        game_id: t.gameId ?? '',
-        ticket_id: t.barcode ?? String(t._id),
-        play_point: playPoint,
-        won_point: wonPoint,
-        end_point: playPoint - wonPoint,
-        draw_date: t.drawDate ?? '',
-        draw_time: t.drawTime ?? '',
-        coupon_time: t.couponTime ?? '',
-        game_result: hasResult ? `${t.drawDate ?? ''} ${t.drawTime ?? ''}`.trim() : null,
-        status: this.ticketHistoryStatus(t),
-        items: (t.items ?? []).map((item) => ({
+      const tickets = await getTicketModel()
+        .find(match)
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean();
+
+      for (const t of tickets) {
+        const playPoint = t.totalPoint ?? 0;
+        const wonPoint = t.winPoint ?? 0;
+        const hasResult = t.status !== 'result_pending';
+        skillRows.push({
+          created_at: t.createdAt ? new Date(t.createdAt).toISOString() : null,
+          username: t.username ?? '',
+          game_type: t.gameType ?? '2d',
+          game_id: t.gameId ?? '',
+          ticket_id: t.barcode ?? String(t._id),
+          play_point: playPoint,
+          won_point: wonPoint,
+          end_point: playPoint - wonPoint,
+          draw_date: t.drawDate ?? '',
+          draw_time: t.drawTime ?? '',
+          coupon_time: t.couponTime ?? '',
+          game_result: hasResult ? `${t.drawDate ?? ''} ${t.drawTime ?? ''}`.trim() : null,
+          status: this.ticketHistoryStatus(t),
+          items: (t.items ?? []).map((item) => ({
+            label: item.label,
+            amount: item.amount,
+            series_key: item.seriesKey,
+            series_letter: item.seriesLetter
+          }))
+        });
+      }
+    }
+
+    let dusRows: Record<string, unknown>[] = [];
+    if (includeDus) {
+      const userDocs = await User.find({ _id: { $in: playerIds } })
+        .select('_id username')
+        .lean();
+      const usernameByUserId = new Map(userDocs.map((u) => [String(u._id), u.username ?? '']));
+      const fetched = await fetchDusGameHistoryRows({
+        userIds: playerIds.map((id) => String(id)),
+        usernameByUserId,
+        dateFilter: range,
+        username: opts?.username,
+        limit
+      });
+      dusRows = fetched.map((row) => ({
+        created_at:
+          row.createdAt instanceof Date
+            ? row.createdAt.toISOString()
+            : row.createdAt
+              ? String(row.createdAt)
+              : null,
+        username: row.username,
+        game_type: row.gameType,
+        game_id: row.gameId,
+        ticket_id: row.ticketId,
+        play_point: row.playPoint,
+        won_point: row.wonPoint,
+        end_point: row.endPoint,
+        draw_date: row.drawDate,
+        draw_time: row.drawTime,
+        coupon_time: '',
+        game_result: row.gameResult,
+        status: row.status,
+        items: row.items.map((item) => ({
           label: item.label,
           amount: item.amount,
           series_key: item.seriesKey,
           series_letter: item.seriesLetter
         }))
-      };
-    });
+      }));
+    }
+
+    const rows = [...skillRows, ...dusRows]
+      .sort((a, b) => {
+        const at = new Date(String(a.created_at || 0)).getTime();
+        const bt = new Date(String(b.created_at || 0)).getTime();
+        return (Number.isFinite(bt) ? bt : 0) - (Number.isFinite(at) ? at : 0);
+      })
+      .slice(0, limit);
 
     return {
       success: true as const,
