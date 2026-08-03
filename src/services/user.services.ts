@@ -496,7 +496,7 @@ export class UserService {
             } else if (currentUser.role === 'distributor') {
                 hasAccess = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             } else if (currentUser.role === 'retailer') {
-                hasAccess = targetUser.createdBy?.toString() === currentUser._id;
+                hasAccess = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             }
 
             if (!hasAccess) {
@@ -577,7 +577,7 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -598,78 +598,115 @@ export class UserService {
         return updatedUser;
     }
 
+    static isUserInRetailerHierarchy(targetUser: any, retailerId: string): boolean {
+        const retailerIdStr = retailerId.toString();
+        return (
+            targetUser.retailerId?.toString() === retailerIdStr ||
+            targetUser.parentId?.toString() === retailerIdStr ||
+            targetUser.createdBy?.toString() === retailerIdStr
+        );
+    }
+
     static async isUserInDistributorHierarchy(targetUserId: string, distributorId: string): Promise<boolean> {
-        // Check if the target user is in the distributor's hierarchy
         const targetUser = await User.findById(targetUserId);
         if (!targetUser) {
-            console.log(`isUserInDistributorHierarchy: Target user ${targetUserId} not found`);
             return false;
         }
 
-        console.log(`isUserInDistributorHierarchy: Checking if user ${targetUserId} (createdBy: ${targetUser.createdBy}, role: ${targetUser.role}) is in distributor ${distributorId}'s hierarchy`);
+        const distributorIdStr = distributorId.toString();
 
-        // If target user is directly created by distributor
-        if (targetUser.createdBy?.toString() === distributorId) {
-            console.log(`isUserInDistributorHierarchy: User ${targetUserId} is directly created by distributor ${distributorId}`);
+        // Prefer hierarchy fields (works when Admin creates users into the tree)
+        if (targetUser.distributorId?.toString() === distributorIdStr) {
+            return true;
+        }
+        if (targetUser.parentId?.toString() === distributorIdStr) {
             return true;
         }
 
-        // If target user is created by a retailer under this distributor
+        // Fallback for older records that only have createdBy
+        if (targetUser.createdBy?.toString() === distributorIdStr) {
+            return true;
+        }
+
         if (targetUser.role === 'user') {
-            // Find all retailers under this distributor
             const retailers = await User.find({
-                createdBy: distributorId,
-                role: 'retailer'
+                $or: [
+                    { distributorId: distributorId },
+                    { parentId: distributorId },
+                    { createdBy: distributorId },
+                ],
+                role: 'retailer',
             }).select('_id').lean();
 
             const retailerIds = retailers.map(r => r._id.toString());
-            console.log(`isUserInDistributorHierarchy: Found retailers under distributor ${distributorId}: ${retailerIds}`);
-
-            if (retailerIds.includes(targetUser.createdBy?.toString())) {
-                console.log(`isUserInDistributorHierarchy: User ${targetUserId} is created by retailer under distributor ${distributorId}`);
+            if (
+                retailerIds.includes(targetUser.createdBy?.toString() || '') ||
+                retailerIds.includes(targetUser.retailerId?.toString() || '') ||
+                retailerIds.includes(targetUser.parentId?.toString() || '')
+            ) {
                 return true;
             }
         }
 
-        console.log(`isUserInDistributorHierarchy: User ${targetUserId} is NOT in distributor ${distributorId}'s hierarchy`);
         return false;
     }
 
     static async isUserInSuperDistributorHierarchy(targetUserId: string, superDistributorId: string): Promise<boolean> {
-        // Check if the target user is in the super distributor's hierarchy
         const targetUser = await User.findById(targetUserId);
         if (!targetUser) return false;
 
-        // If target user is directly created by super distributor
-        if (targetUser.createdBy?.toString() === superDistributorId) {
+        const sdIdStr = superDistributorId.toString();
+
+        // Prefer hierarchy fields (works when Admin creates users into the tree)
+        if (targetUser.superDistributorId?.toString() === sdIdStr) {
+            return true;
+        }
+        if (targetUser.parentId?.toString() === sdIdStr) {
             return true;
         }
 
-        // If target user is created by a distributor under this super distributor
-        if (targetUser.role === 'distributor' || targetUser.role === 'retailer' || targetUser.role === 'user') {
-            // Find all distributors under this super distributor
+        // Fallback for older records that only have createdBy
+        if (targetUser.createdBy?.toString() === sdIdStr) {
+            return true;
+        }
+
+        if (['distributor', 'retailer', 'user'].includes(targetUser.role)) {
             const distributors = await User.find({
-                createdBy: superDistributorId,
-                role: 'distributor'
+                $or: [
+                    { superDistributorId: superDistributorId },
+                    { parentId: superDistributorId },
+                    { createdBy: superDistributorId },
+                ],
+                role: 'distributor',
             }).select('_id').lean();
 
             const distributorIds = distributors.map(d => d._id.toString());
 
-            // Check if target user was created by one of these distributors
-            if (distributorIds.includes(targetUser.createdBy?.toString())) {
+            if (
+                distributorIds.includes(targetUser.createdBy?.toString() || '') ||
+                distributorIds.includes(targetUser.distributorId?.toString() || '') ||
+                distributorIds.includes(targetUser.parentId?.toString() || '')
+            ) {
                 return true;
             }
 
-            // Check if target user was created by a retailer under these distributors
-            if (targetUser.role === 'user') {
+            if (targetUser.role === 'user' || targetUser.role === 'retailer') {
                 const retailers = await User.find({
-                    createdBy: { $in: distributorIds },
-                    role: 'retailer'
+                    $or: [
+                        { superDistributorId: superDistributorId },
+                        { distributorId: { $in: distributorIds } },
+                        { createdBy: { $in: distributorIds } },
+                    ],
+                    role: 'retailer',
                 }).select('_id').lean();
 
                 const retailerIds = retailers.map(r => r._id.toString());
 
-                if (retailerIds.includes(targetUser.createdBy?.toString())) {
+                if (
+                    retailerIds.includes(targetUser.createdBy?.toString() || '') ||
+                    retailerIds.includes(targetUser.retailerId?.toString() || '') ||
+                    retailerIds.includes(targetUser.parentId?.toString() || '')
+                ) {
                     return true;
                 }
             }
@@ -743,7 +780,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 console.log(`updateUser: User not in retailer hierarchy`);
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -881,7 +918,7 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -971,7 +1008,7 @@ export class UserService {
                 (error as any).status = 403;
                 throw error;
             }
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -1047,7 +1084,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -1120,7 +1157,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
