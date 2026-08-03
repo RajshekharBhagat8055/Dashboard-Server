@@ -21,6 +21,8 @@ export interface HierarchyUser {
     email?: string;
     commissionRate?: number;
     plainPassword?: string | null;
+    parentId?: ObjectId | string;
+    parentUsername?: string;
 }
 
 export interface HierarchyStats {
@@ -31,64 +33,73 @@ export interface HierarchyStats {
     totalPoints: number;
 }
 
+const LIST_FIELDS = 'username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate parentId';
+
 export class UserService {
+
+    /** Attach each user's direct parent username for Refer Name columns */
+    private static async attachParentUsernames(users: any[]): Promise<HierarchyUser[]> {
+        const parentIds = [...new Set(
+            users
+                .map((u) => u.parentId?.toString())
+                .filter((id): id is string => Boolean(id))
+        )];
+
+        const parentMap = new Map<string, string>();
+        if (parentIds.length > 0) {
+            const parents = await User.find({ _id: { $in: parentIds } })
+                .select('username')
+                .lean();
+            parents.forEach((p) => parentMap.set(p._id.toString(), p.username));
+        }
+
+        return users.map((u) => ({
+            ...u,
+            isOnline: u.isOnline || false,
+            parentUsername: u.parentId ? parentMap.get(u.parentId.toString()) : undefined,
+        }));
+    }
 
     // ============ ADMIN METHODS (sees everything) ============
 
     static async getAllSuperDistributors(): Promise<HierarchyUser[]> {
-        return await User.find({
+        const users = await User.find({
             role: "super_distributor",
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
+
+        return UserService.attachParentUsernames(users);
     }
 
     static async getAllDistributors(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const distributors = await User.find({
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return distributors.map(distributor => ({
-            ...distributor,
-            isOnline: distributor.isOnline || false
-        }));
+        return UserService.attachParentUsernames(distributors);
     }
 
     static async getAllRetailers(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const retailers = await User.find({
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getAllUsers(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const users = await User.find({
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically set isOnline based on recent activity
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getAdminStats(): Promise<HierarchyStats> {
@@ -115,56 +126,38 @@ export class UserService {
     // ============ SUPER DISTRIBUTOR METHODS ============
 
     static async getDistributorsUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const distributors = await User.find({
             superDistributorId: superDistributorId,
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return distributors.map(distributor => ({
-            ...distributor,
-            isOnline: distributor.isOnline || false
-        }));
+        return UserService.attachParentUsernames(distributors);
     }
 
     static async getRetailersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
-        // Get all retailers under this super distributor using the hierarchy field
         const retailers = await User.find({
             superDistributorId: superDistributorId,
             role: 'retailer'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        // Get all users under this super distributor using the hierarchy field
         const users = await User.find({
             superDistributorId: superDistributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getSuperDistributorStats(superDistributorId: string): Promise<HierarchyStats> {
@@ -240,39 +233,26 @@ export class UserService {
     // ============ DISTRIBUTOR METHODS ============
 
     static async getRetailersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getUsersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
-        // Get all users under this distributor using the hierarchy field
         const users = await User.find({
             distributorId: distributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getDistributorStats(distributorId: string): Promise<HierarchyStats> {
@@ -335,20 +315,14 @@ export class UserService {
     // ============ RETAILER METHODS ============
 
     static async getUsersUnderRetailer(retailerId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const users = await User.find({
             retailerId: retailerId,
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getRetailerStats(retailerId: string): Promise<HierarchyStats> {
