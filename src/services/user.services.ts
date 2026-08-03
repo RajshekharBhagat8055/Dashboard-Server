@@ -20,6 +20,8 @@ export interface HierarchyUser {
     endPoints?: number;
     email?: string;
     commissionRate?: number;
+    parentId?: ObjectId | string;
+    parentUsername?: string;
 }
 
 export interface HierarchyStats {
@@ -30,64 +32,73 @@ export interface HierarchyStats {
     totalPoints: number;
 }
 
+const LIST_FIELDS = 'username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate parentId';
+
 export class UserService {
+
+    /** Attach each user's direct parent username for Refer Name columns */
+    private static async attachParentUsernames(users: any[]): Promise<HierarchyUser[]> {
+        const parentIds = [...new Set(
+            users
+                .map((u) => u.parentId?.toString())
+                .filter((id): id is string => Boolean(id))
+        )];
+
+        const parentMap = new Map<string, string>();
+        if (parentIds.length > 0) {
+            const parents = await User.find({ _id: { $in: parentIds } })
+                .select('username')
+                .lean();
+            parents.forEach((p) => parentMap.set(p._id.toString(), p.username));
+        }
+
+        return users.map((u) => ({
+            ...u,
+            isOnline: u.isOnline || false,
+            parentUsername: u.parentId ? parentMap.get(u.parentId.toString()) : undefined,
+        }));
+    }
 
     // ============ ADMIN METHODS (sees everything) ============
 
     static async getAllSuperDistributors(): Promise<HierarchyUser[]> {
-        return await User.find({
+        const users = await User.find({
             role: "super_distributor",
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
+
+        return UserService.attachParentUsernames(users);
     }
 
     static async getAllDistributors(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const distributors = await User.find({
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return distributors.map(distributor => ({
-            ...distributor,
-            isOnline: distributor.isOnline || false
-        }));
+        return UserService.attachParentUsernames(distributors);
     }
 
     static async getAllRetailers(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const retailers = await User.find({
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getAllUsers(): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const users = await User.find({
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Dynamically set isOnline based on recent activity
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getAdminStats(): Promise<HierarchyStats> {
@@ -114,56 +125,38 @@ export class UserService {
     // ============ SUPER DISTRIBUTOR METHODS ============
 
     static async getDistributorsUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const distributors = await User.find({
             superDistributorId: superDistributorId,
             role: 'distributor',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return distributors.map(distributor => ({
-            ...distributor,
-            isOnline: distributor.isOnline || false
-        }));
+        return UserService.attachParentUsernames(distributors);
     }
 
     static async getRetailersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
-        // Get all retailers under this super distributor using the hierarchy field
         const retailers = await User.find({
             superDistributorId: superDistributorId,
             role: 'retailer'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
-        // Get all users under this super distributor using the hierarchy field
         const users = await User.find({
             superDistributorId: superDistributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getSuperDistributorStats(superDistributorId: string): Promise<HierarchyStats> {
@@ -239,39 +232,26 @@ export class UserService {
     // ============ DISTRIBUTOR METHODS ============
 
     static async getRetailersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return retailers.map(retailer => ({
-            ...retailer,
-            isOnline: retailer.isOnline || false
-        }));
+        return UserService.attachParentUsernames(retailers);
     }
 
     static async getUsersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
-        // Get all users under this distributor using the hierarchy field
         const users = await User.find({
             distributorId: distributorId,
             role: 'user'
         })
-        .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        .select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getDistributorStats(distributorId: string): Promise<HierarchyStats> {
@@ -334,20 +314,14 @@ export class UserService {
     // ============ RETAILER METHODS ============
 
     static async getUsersUnderRetailer(retailerId: string): Promise<HierarchyUser[]> {
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-
         const users = await User.find({
             retailerId: retailerId,
             role: 'user',
-        }).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity')
+        }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
 
-        // Use stored isOnline status from database
-        return users.map(user => ({
-            ...user,
-            isOnline: user.isOnline || false
-        }));
+        return UserService.attachParentUsernames(users);
     }
 
     static async getRetailerStats(retailerId: string): Promise<HierarchyStats> {
@@ -495,7 +469,7 @@ export class UserService {
             } else if (currentUser.role === 'distributor') {
                 hasAccess = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             } else if (currentUser.role === 'retailer') {
-                hasAccess = targetUser.createdBy?.toString() === currentUser._id;
+                hasAccess = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             }
 
             if (!hasAccess) {
@@ -529,78 +503,109 @@ export class UserService {
 
     // ============ MUTATION METHODS ============
 
+    static isUserInRetailerHierarchy(targetUser: any, retailerId: string): boolean {
+        const retailerIdStr = retailerId.toString();
+        return (
+            targetUser.retailerId?.toString() === retailerIdStr ||
+            targetUser.parentId?.toString() === retailerIdStr ||
+            targetUser.createdBy?.toString() === retailerIdStr
+        );
+    }
+
     static async isUserInDistributorHierarchy(targetUserId: string, distributorId: string): Promise<boolean> {
-        // Check if the target user is in the distributor's hierarchy
         const targetUser = await User.findById(targetUserId);
         if (!targetUser) {
-            console.log(`isUserInDistributorHierarchy: Target user ${targetUserId} not found`);
             return false;
         }
 
-        console.log(`isUserInDistributorHierarchy: Checking if user ${targetUserId} (createdBy: ${targetUser.createdBy}, role: ${targetUser.role}) is in distributor ${distributorId}'s hierarchy`);
+        const distributorIdStr = distributorId.toString();
 
-        // If target user is directly created by distributor
-        if (targetUser.createdBy?.toString() === distributorId) {
-            console.log(`isUserInDistributorHierarchy: User ${targetUserId} is directly created by distributor ${distributorId}`);
+        if (targetUser.distributorId?.toString() === distributorIdStr) {
+            return true;
+        }
+        if (targetUser.parentId?.toString() === distributorIdStr) {
+            return true;
+        }
+        if (targetUser.createdBy?.toString() === distributorIdStr) {
             return true;
         }
 
-        // If target user is created by a retailer under this distributor
         if (targetUser.role === 'user') {
-            // Find all retailers under this distributor
             const retailers = await User.find({
-                createdBy: distributorId,
-                role: 'retailer'
+                $or: [
+                    { distributorId: distributorId },
+                    { parentId: distributorId },
+                    { createdBy: distributorId },
+                ],
+                role: 'retailer',
             }).select('_id').lean();
 
             const retailerIds = retailers.map(r => r._id.toString());
-            console.log(`isUserInDistributorHierarchy: Found retailers under distributor ${distributorId}: ${retailerIds}`);
-
-            if (retailerIds.includes(targetUser.createdBy?.toString())) {
-                console.log(`isUserInDistributorHierarchy: User ${targetUserId} is created by retailer under distributor ${distributorId}`);
+            if (
+                retailerIds.includes(targetUser.createdBy?.toString() || '') ||
+                retailerIds.includes(targetUser.retailerId?.toString() || '') ||
+                retailerIds.includes(targetUser.parentId?.toString() || '')
+            ) {
                 return true;
             }
         }
 
-        console.log(`isUserInDistributorHierarchy: User ${targetUserId} is NOT in distributor ${distributorId}'s hierarchy`);
         return false;
     }
 
     static async isUserInSuperDistributorHierarchy(targetUserId: string, superDistributorId: string): Promise<boolean> {
-        // Check if the target user is in the super distributor's hierarchy
         const targetUser = await User.findById(targetUserId);
         if (!targetUser) return false;
 
-        // If target user is directly created by super distributor
-        if (targetUser.createdBy?.toString() === superDistributorId) {
+        const sdIdStr = superDistributorId.toString();
+
+        if (targetUser.superDistributorId?.toString() === sdIdStr) {
+            return true;
+        }
+        if (targetUser.parentId?.toString() === sdIdStr) {
+            return true;
+        }
+        if (targetUser.createdBy?.toString() === sdIdStr) {
             return true;
         }
 
-        // If target user is created by a distributor under this super distributor
-        if (targetUser.role === 'distributor' || targetUser.role === 'retailer' || targetUser.role === 'user') {
-            // Find all distributors under this super distributor
+        if (['distributor', 'retailer', 'user'].includes(targetUser.role)) {
             const distributors = await User.find({
-                createdBy: superDistributorId,
-                role: 'distributor'
+                $or: [
+                    { superDistributorId: superDistributorId },
+                    { parentId: superDistributorId },
+                    { createdBy: superDistributorId },
+                ],
+                role: 'distributor',
             }).select('_id').lean();
 
             const distributorIds = distributors.map(d => d._id.toString());
 
-            // Check if target user was created by one of these distributors
-            if (distributorIds.includes(targetUser.createdBy?.toString())) {
+            if (
+                distributorIds.includes(targetUser.createdBy?.toString() || '') ||
+                distributorIds.includes(targetUser.distributorId?.toString() || '') ||
+                distributorIds.includes(targetUser.parentId?.toString() || '')
+            ) {
                 return true;
             }
 
-            // Check if target user was created by a retailer under these distributors
-            if (targetUser.role === 'user') {
+            if (targetUser.role === 'user' || targetUser.role === 'retailer') {
                 const retailers = await User.find({
-                    createdBy: { $in: distributorIds },
-                    role: 'retailer'
+                    $or: [
+                        { superDistributorId: superDistributorId },
+                        { distributorId: { $in: distributorIds } },
+                        { createdBy: { $in: distributorIds } },
+                    ],
+                    role: 'retailer',
                 }).select('_id').lean();
 
                 const retailerIds = retailers.map(r => r._id.toString());
 
-                if (retailerIds.includes(targetUser.createdBy?.toString())) {
+                if (
+                    retailerIds.includes(targetUser.createdBy?.toString() || '') ||
+                    retailerIds.includes(targetUser.retailerId?.toString() || '') ||
+                    retailerIds.includes(targetUser.parentId?.toString() || '')
+                ) {
                     return true;
                 }
             }
@@ -674,7 +679,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 console.log(`updateUser: User not in retailer hierarchy`);
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -773,7 +778,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -790,8 +795,7 @@ export class UserService {
         await User.findByIdAndDelete(userId);
     }
 
-    static async transferCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
-        // Check permissions
+    static async transferCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
         const targetUser = await User.findById(userId);
         if (!targetUser) {
             const error = new Error('User not found');
@@ -805,12 +809,11 @@ export class UserService {
             (error as any).status = 404;
             throw error;
         }
-        console.log(`Transfer attempt - User: ${currentUserDoc.username}, Current Balance: ${currentUserDoc.creditBalance}, Transfer Amount: ${amount}`);
 
-        // Check if current user has enough credit
-        if (currentUserDoc.creditBalance < amount) {
-            const error = new Error(`Insufficient credit balance. You have ${currentUserDoc.creditBalance} credits but trying to transfer ${amount} credits.`);
-            (error as any).status = 400;
+        const isPasswordValid = await currentUserDoc.comparePassword(password);
+        if (!isPasswordValid) {
+            const error = new Error('Invalid password');
+            (error as any).status = 401;
             throw error;
         }
 
@@ -818,13 +821,11 @@ export class UserService {
         if (currentUser.role === 'admin') {
             // Admin can transfer to anyone
         } else if (currentUser.role === 'super_distributor') {
-            // Super distributor can only transfer to distributors, retailers, and users under them
             if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in super distributor's hierarchy
             const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -832,13 +833,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'distributor') {
-            // Distributor can only transfer to retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in distributor's hierarchy
             const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -846,28 +845,37 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'retailer') {
-            // Retailer can only transfer to users under them
             if (targetUser.role !== 'user') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
         } else {
-            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
         }
 
-        // Perform the transfer
-        await User.findByIdAndUpdate(currentUser._id, { $inc: { creditBalance: -amount } });
+        // Funding comes from the target's direct parent, not the logged-in user
+        // If the parent is admin, treat as unlimited — no balance check or deduction
+        const parentUser = targetUser.parentId ? await User.findById(targetUser.parentId) : null;
+        const parentIsAdmin = parentUser?.role === 'admin';
+
+        if (parentUser && !parentIsAdmin) {
+            if (parentUser.creditBalance < amount) {
+                const error = new Error(`Insufficient balance in parent account. Parent has ${parentUser.creditBalance} credits.`);
+                (error as any).status = 400;
+                throw error;
+            }
+            await User.findByIdAndUpdate(parentUser._id, { $inc: { creditBalance: -amount } });
+        }
+
         const updatedUser = await User.findByIdAndUpdate(
             userId,
             { $inc: { creditBalance: amount } },
@@ -877,8 +885,7 @@ export class UserService {
         return updatedUser!;
     }
 
-    static async adjustCredit(userId: string, amount: number, currentUser: any): Promise<HierarchyUser> {
-        // Check permissions
+    static async adjustCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
         const targetUser = await User.findById(userId);
         if (!targetUser) {
             const error = new Error('User not found');
@@ -886,17 +893,29 @@ export class UserService {
             throw error;
         }
 
+        const currentUserDoc = await User.findById(currentUser._id);
+        if (!currentUserDoc) {
+            const error = new Error('Current user not found');
+            (error as any).status = 404;
+            throw error;
+        }
+
+        const isPasswordValid = await currentUserDoc.comparePassword(password);
+        if (!isPasswordValid) {
+            const error = new Error('Invalid password');
+            (error as any).status = 401;
+            throw error;
+        }
+
         // Permission checks based on roles
         if (currentUser.role === 'admin') {
             // Admin can adjust anyone's credit
         } else if (currentUser.role === 'super_distributor') {
-            // Super distributor can only adjust distributors, retailers, and users under them
             if (targetUser.role === 'admin' || targetUser.role === 'super_distributor') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in super distributor's hierarchy
             const isInHierarchy = await UserService.isUserInSuperDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -904,13 +923,11 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'distributor') {
-            // Distributor can only adjust retailers and users under them
             if (!['retailer', 'user'].includes(targetUser.role)) {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in distributor's hierarchy
             const isInHierarchy = await UserService.isUserInDistributorHierarchy(userId, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
@@ -918,32 +935,41 @@ export class UserService {
                 throw error;
             }
         } else if (currentUser.role === 'retailer') {
-            // Retailer can only adjust users under them
             if (targetUser.role !== 'user') {
                 const error = new Error('Access denied');
                 (error as any).status = 403;
                 throw error;
             }
-            // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
                 throw error;
             }
         } else {
-            console.log(`updateUser: Unknown role ${currentUser.role} - access denied`);
             const error = new Error('Access denied');
             (error as any).status = 403;
             throw error;
         }
 
-        // Adjust the credit
+        if (targetUser.creditBalance < amount) {
+            const error = new Error(`Insufficient credits. User has ${targetUser.creditBalance} credits but trying to subtract ${amount}.`);
+            (error as any).status = 400;
+            throw error;
+        }
+
+        // Subtract from target
         const updatedUser = await User.findByIdAndUpdate(
             userId,
-            { $inc: { creditBalance: amount } },
+            { $inc: { creditBalance: -amount } },
             { new: true }
         ).select('username uniqueId creditBalance isOnline isActive isBanned createdAt role');
+
+        // Return the subtracted amount to the target's parent (skip if parent is admin)
+        const parentUser = targetUser.parentId ? await User.findById(targetUser.parentId) : null;
+        if (parentUser && parentUser.role !== 'admin') {
+            await User.findByIdAndUpdate(parentUser._id, { $inc: { creditBalance: amount } });
+        }
 
         return updatedUser!;
     }
@@ -990,7 +1016,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;
@@ -1063,7 +1089,7 @@ export class UserService {
                 throw error;
             }
             // Check if target user is in retailer's hierarchy
-            const isInHierarchy = targetUser.createdBy?.toString() === currentUser._id;
+            const isInHierarchy = UserService.isUserInRetailerHierarchy(targetUser, currentUser._id);
             if (!isInHierarchy) {
                 const error = new Error('Access denied - User not in your hierarchy');
                 (error as any).status = 403;

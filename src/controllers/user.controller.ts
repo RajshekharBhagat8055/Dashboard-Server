@@ -1,6 +1,7 @@
 import { Request, Response } from "express"
 import { UserService } from "../services/user.services";
 import User from "../models/User";
+import Log from "../models/log.model";
 
 // ============ ADMIN ENDPOINTS ============
 
@@ -569,16 +570,22 @@ const transferCredit = async (req: Request, res: Response) => {
         }
 
         const { id } = req.params;
-        const { amount } = req.body;    
-        console.log(amount);
-        if (!amount || typeof amount !== 'number') {
+        const { amount, password } = req.body;
+
+        if (!amount || typeof amount !== 'number' || amount <= 0) {
             return res.status(400).json({
                 success: false,
                 message: "Invalid amount provided",
             });
         }
 
-        // Check permissions based on user role
+        if (!password || typeof password !== 'string') {
+            return res.status(400).json({
+                success: false,
+                message: "Password is required for credit transfer",
+            });
+        }
+
         const currentUser = req.user;
         if (!currentUser) {
             return res.status(401).json({
@@ -587,7 +594,7 @@ const transferCredit = async (req: Request, res: Response) => {
             });
         }
 
-        const result = await UserService.transferCredit(id, amount, currentUser);
+        const result = await UserService.transferCredit(id, amount, currentUser, password);
         return res.status(200).json({
             success: true,
             data: result,
@@ -613,16 +620,22 @@ const adjustCredit = async (req: Request, res: Response) => {
         }
 
         const { id } = req.params;
-        const { amount } = req.body;
+        const { amount, password } = req.body;
 
-        if (!amount || typeof amount !== 'number') {
+        if (!amount || typeof amount !== 'number' || amount <= 0) {
             return res.status(400).json({
                 success: false,
-                message: "Invalid amount provided",
+                message: "Invalid amount provided. Amount must be a positive number.",
             });
         }
 
-        // Check permissions based on user role
+        if (!password || typeof password !== 'string') {
+            return res.status(400).json({
+                success: false,
+                message: "Password is required for credit adjustment",
+            });
+        }
+
         const currentUser = req.user;
         if (!currentUser) {
             return res.status(401).json({
@@ -631,7 +644,7 @@ const adjustCredit = async (req: Request, res: Response) => {
             });
         }
 
-        const result = await UserService.adjustCredit(id, amount, currentUser);
+        const result = await UserService.adjustCredit(id, amount, currentUser, password);
         return res.status(200).json({
             success: true,
             data: result,
@@ -970,6 +983,89 @@ const getChildrenUnderDistributor = async (req: Request, res: Response) => {
     }
 };
 
+const getCreditContext = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Authentication required" });
+        }
+
+        const { id } = req.params;
+        const targetUser = await User.findById(id).select('username uniqueId creditBalance role parentId');
+        if (!targetUser) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
+        let parent: { username: string; creditBalance: number } | null = null;
+        if (targetUser.parentId) {
+            const parentUser = await User.findById(targetUser.parentId).select('username creditBalance role');
+            if (parentUser && parentUser.role !== 'admin') {
+                parent = { username: parentUser.username, creditBalance: parentUser.creditBalance };
+            }
+        }
+
+        return res.status(200).json({
+            success: true,
+            data: {
+                target: {
+                    _id: targetUser._id,
+                    username: targetUser.username,
+                    uniqueId: targetUser.uniqueId,
+                    creditBalance: targetUser.creditBalance,
+                    role: targetUser.role,
+                },
+                parent,
+            },
+        });
+    } catch (error) {
+        console.error(`Error in getCreditContext: ${error}`);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
+const getCreditLogs = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        if (!userId) {
+            return res.status(401).json({ success: false, message: "Authentication required" });
+        }
+
+        const { id } = req.params;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const skip = (page - 1) * limit;
+
+        const filter = {
+            resourceId: id,
+            action: { $in: ['CREDIT_TRANSFER', 'CREDIT_ADJUSTMENT'] },
+        };
+
+        const [logs, total] = await Promise.all([
+            Log.find(filter)
+                .populate('userId', 'username uniqueId role')
+                .sort({ createdAt: -1 })
+                .skip(skip)
+                .limit(limit)
+                .lean(),
+            Log.countDocuments(filter),
+        ]);
+
+        return res.status(200).json({
+            success: true,
+            data: logs,
+            pagination: {
+                page,
+                limit,
+                total,
+                totalPages: Math.ceil(total / limit),
+            },
+        });
+    } catch (error) {
+        console.error(`Error in getCreditLogs: ${error}`);
+        return res.status(500).json({ success: false, message: "Internal server error" });
+    }
+};
+
 export {
     // Admin endpoints
     getAllSuperDistributors,
@@ -1010,4 +1106,8 @@ export {
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
     getChildrenUnderDistributor,
+
+    // Credit context and logs
+    getCreditContext,
+    getCreditLogs,
 };
