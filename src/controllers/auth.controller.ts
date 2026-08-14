@@ -54,8 +54,8 @@ const login = async (req: Request, res: Response) => {
       });
     }
 
-    // Update last login and set online status
-    const updateFields: any = { lastLogin: new Date(), isOnline: true, lastActivity: new Date() };
+    // Panel login is not game presence — isOnline is owned by skill-game sockets
+    const updateFields: any = { lastLogin: new Date(), lastActivity: new Date() };
     if (!user.plainPassword) {
       updateFields.plainPassword = password;
     }
@@ -111,7 +111,7 @@ const login = async (req: Request, res: Response) => {
           role: user.role,
           uniqueId: user.uniqueId,
           creditBalance: user.creditBalance,
-          isOnline: true,
+          isOnline: user.isOnline,
           lastLogin: user.lastLogin,
           // Hierarchy fields
           superDistributorId: user.superDistributorId,
