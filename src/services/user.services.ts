@@ -614,6 +614,26 @@ export class UserService {
         return false;
     }
 
+    /** All descendant user ids below the given user in the hierarchy (distributor -> retailer -> user chain). */
+    static async getDescendantUserIds(targetUser: any): Promise<ObjectId[]> {
+        let query: Record<string, any> | null = null;
+
+        if (targetUser.role === 'super_distributor') {
+            query = { superDistributorId: targetUser._id };
+        } else if (targetUser.role === 'distributor') {
+            query = { distributorId: targetUser._id };
+        } else if (targetUser.role === 'retailer') {
+            query = { retailerId: targetUser._id };
+        }
+
+        if (!query) {
+            return [];
+        }
+
+        const descendants = await User.find(query).select('_id').lean();
+        return descendants.map(d => d._id as ObjectId);
+    }
+
     static async updateUser(userId: string, updates: Partial<HierarchyUser>, currentUser: any): Promise<HierarchyUser> {
         console.log(`updateUser: START - User ${currentUser._id} (${currentUser.role}) trying to update user ${userId}`);
         console.log(`updateUser: Current user role: "${currentUser.role}"`);
@@ -1033,6 +1053,16 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
+
+        // Cascade the ban to everyone below this user in the hierarchy
+        const descendantIds = await UserService.getDescendantUserIds(targetUser);
+        if (descendantIds.length > 0) {
+            await User.updateMany(
+                { _id: { $in: descendantIds } },
+                { $set: { isBanned: true, isActive: false, isOnline: false } }
+            );
+        }
+
         const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false, isOnline: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
         if(!updatedUser) {
             const error = new Error('Failed to ban user');
@@ -1108,7 +1138,16 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
-    
+
+        // Cascade the unban to everyone below this user in the hierarchy
+        const descendantIds = await UserService.getDescendantUserIds(targetUser);
+        if (descendantIds.length > 0) {
+            await User.updateMany(
+                { _id: { $in: descendantIds }, isBanned: true },
+                { $set: { isBanned: false, isActive: true } }
+            );
+        }
+
         // Unban the user (but don't automatically activate - let admin decide)
         const updatedUser = await User.findByIdAndUpdate(
             userId,
