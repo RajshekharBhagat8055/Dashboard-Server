@@ -811,6 +811,12 @@ export class UserService {
             throw error;
         }
 
+        // Cascade the delete to everyone below this user in the hierarchy
+        const descendantIds = await UserService.getDescendantUserIds(targetUser);
+        if (descendantIds.length > 0) {
+            await User.deleteMany({ _id: { $in: descendantIds } });
+        }
+
         // Delete the user
         await User.findByIdAndDelete(userId);
     }
