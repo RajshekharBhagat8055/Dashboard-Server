@@ -73,10 +73,12 @@ ticketSchema.index({ drawDate: 1, status: 1 });
  */
 export function getTicketsDbConnection(): mongoose.Connection {
   const main = mongoose.connection;
+  const ticketsDbName =
+    process.env.SKILL_GAME_DB_NAME ||
+    process.env.TICKETS_DB_NAME ||
+    null;
   const ticketsDb =
-    process.env.TICKETS_DB_NAME && process.env.TICKETS_DB_NAME !== process.env.DB_NAME
-      ? process.env.TICKETS_DB_NAME
-      : null;
+    ticketsDbName && ticketsDbName !== process.env.DB_NAME ? ticketsDbName : null;
 
   if (!ticketsDb) {
     return main;

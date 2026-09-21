@@ -35,7 +35,33 @@ export interface HierarchyStats {
 
 const LIST_FIELDS = 'username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate parentId';
 
+/** Soft-deleted users are hidden from hierarchy lists and login. */
+const NOT_DELETED = { deletedAt: null } as const;
+
 export class UserService {
+
+    /** BFS collect target + all descendants (non-deleted by default). */
+    static async collectSubtreeIds(
+        rootId: string,
+        opts: { includeDeleted?: boolean } = {},
+    ): Promise<string[]> {
+        const ids: string[] = [rootId];
+        const queue: string[] = [rootId];
+        while (queue.length > 0) {
+            const parentIds = queue.splice(0, queue.length);
+            const filter: Record<string, unknown> = { parentId: { $in: parentIds } };
+            if (!opts.includeDeleted) {
+                filter.deletedAt = null;
+            }
+            const children = await User.find(filter).select('_id').lean();
+            for (const child of children) {
+                const childId = child._id.toString();
+                ids.push(childId);
+                queue.push(childId);
+            }
+        }
+        return ids;
+    }
 
     /** Attach each user's direct parent username for Refer Name columns */
     private static async attachParentUsernames(users: any[]): Promise<HierarchyUser[]> {
@@ -65,6 +91,7 @@ export class UserService {
     static async getAllSuperDistributors(): Promise<HierarchyUser[]> {
         const users = await User.find({
             role: "super_distributor",
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -75,6 +102,7 @@ export class UserService {
     static async getAllDistributors(): Promise<HierarchyUser[]> {
         const distributors = await User.find({
             role: 'distributor',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -85,6 +113,7 @@ export class UserService {
     static async getAllRetailers(): Promise<HierarchyUser[]> {
         const retailers = await User.find({
             role: 'retailer',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -95,6 +124,7 @@ export class UserService {
     static async getAllUsers(): Promise<HierarchyUser[]> {
         const users = await User.find({
             role: 'user',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -129,6 +159,7 @@ export class UserService {
         const distributors = await User.find({
             superDistributorId: superDistributorId,
             role: 'distributor',
+        ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -236,6 +267,7 @@ export class UserService {
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
+        ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -318,6 +350,7 @@ export class UserService {
         const users = await User.find({
             retailerId: retailerId,
             role: 'user',
+        ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -610,6 +643,7 @@ export class UserService {
                     { createdBy: distributorId },
                 ],
                 role: 'retailer',
+            ...NOT_DELETED,
             }).select('_id').lean();
 
             const retailerIds = retailers.map(r => r._id.toString());
@@ -652,6 +686,7 @@ export class UserService {
                     { createdBy: superDistributorId },
                 ],
                 role: 'distributor',
+            ...NOT_DELETED,
             }).select('_id').lean();
 
             const distributorIds = distributors.map(d => d._id.toString());
@@ -672,6 +707,7 @@ export class UserService {
                         { createdBy: { $in: distributorIds } },
                     ],
                     role: 'retailer',
+                ...NOT_DELETED,
                 }).select('_id').lean();
 
                 const retailerIds = retailers.map(r => r._id.toString());
@@ -800,14 +836,14 @@ export class UserService {
         return updatedUser;
     }
 
-    static async deleteUser(userId: string, currentUser: any): Promise<void> {
+    static async deleteUser(userId: string, currentUser: any): Promise<{ deletedCount: number }> {
         if (currentUser.role !== 'admin') {
             const error = new Error('Access denied - Only admin can delete users');
             (error as any).status = 403;
             throw error;
         }
 
-        const targetUser = await User.findById(userId);
+        const targetUser = await User.findOne({ _id: userId, ...NOT_DELETED });
         if (!targetUser) {
             const error = new Error('User not found');
             (error as any).status = 404;
@@ -820,21 +856,30 @@ export class UserService {
             throw error;
         }
 
-        // Collect the entire subtree using iterative BFS
-        const idsToDelete: string[] = [userId];
-        const queue: string[] = [userId];
+        const idsToDelete = await UserService.collectSubtreeIds(userId);
+        const now = new Date();
 
-        while (queue.length > 0) {
-            const parentIds = queue.splice(0, queue.length);
-            const children = await User.find({ parentId: { $in: parentIds } }).select('_id').lean();
-            for (const child of children) {
-                const childId = child._id.toString();
-                idsToDelete.push(childId);
-                queue.push(childId);
-            }
+        // Soft-delete cascade: hide from app/login, free username for reuse, keep history for reports.
+        const ops = await User.find({ _id: { $in: idsToDelete }, ...NOT_DELETED }).select('_id username').lean();
+        for (const row of ops) {
+            const idHex = row._id.toString().replace(/[^a-f0-9]/gi, '').slice(0, 8);
+            const base = String(row.username || 'user').slice(0, 37);
+            await User.updateOne(
+                { _id: row._id },
+                {
+                    $set: {
+                        deletedAt: now,
+                        isBanned: true,
+                        isActive: false,
+                        isOnline: false,
+                        status: 'inactive',
+                        username: `${base}~del~${idHex}`,
+                    },
+                },
+            );
         }
 
-        await User.deleteMany({ _id: { $in: idsToDelete } });
+        return { deletedCount: ops.length };
     }
 
     static async transferCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
@@ -1075,7 +1120,20 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
-        const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false, isOnline: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        if ((targetUser as any).deletedAt) {
+            const error = new Error('Cannot ban a deleted user');
+            (error as any).status = 400;
+            throw error;
+        }
+
+        const banIds = await UserService.collectSubtreeIds(userId);
+        await User.updateMany(
+            { _id: { $in: banIds }, ...NOT_DELETED },
+            { $set: { isBanned: true, isActive: false, isOnline: false, status: 'banned' } },
+        );
+
+        const updatedUser = await User.findById(userId)
+            .select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
         if(!updatedUser) {
             const error = new Error('Failed to ban user');
             (error as any).status = 500;
@@ -1089,6 +1147,11 @@ export class UserService {
         if (!targetUser) {
             const error = new Error('User not found');
             (error as any).status = 404;
+            throw error;
+        }
+        if ((targetUser as any).deletedAt) {
+            const error = new Error('Cannot unban a deleted user');
+            (error as any).status = 400;
             throw error;
         }
     
@@ -1150,13 +1213,15 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
+
+        const unbanIds = await UserService.collectSubtreeIds(userId);
+        await User.updateMany(
+            { _id: { $in: unbanIds }, ...NOT_DELETED },
+            { $set: { isBanned: false, isActive: true, status: 'active' } },
+        );
     
-        // Unban the user (but don't automatically activate - let admin decide)
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
-            { $set: { isBanned: false, isActive: true  } }, // Keep isActive as is, let admin decide separately
-            { new: true }
-        ).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        const updatedUser = await User.findById(userId)
+            .select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
     
         if (!updatedUser) {
             const error = new Error('User not found');

@@ -38,6 +38,9 @@ export interface IUser extends Document {
   lastLogin?: Date;
   lastActivity?: Date;
 
+  /** Soft-delete timestamp (null/undefined = active). Cascade soft-delete sets this. */
+  deletedAt?: Date | null;
+
   // Commission System
   commissionRate: number; // Percentage (0-100)
   totalCommissionEarned: number;
@@ -169,6 +172,13 @@ const userSchema = new Schema<IUser>({
   },
   lastActivity: {
     type: Date
+  },
+
+  // Soft delete — set when admin deletes user (cascades to descendants)
+  deletedAt: {
+    type: Date,
+    default: null,
+    index: true,
   },
 
   // Commission System

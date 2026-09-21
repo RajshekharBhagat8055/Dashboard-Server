@@ -44,6 +44,13 @@ const login = async (req: Request, res: Response) => {
       });
     }
 
+    if ((user as any).deletedAt) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid credentials"
+      });
+    }
+
     // Verify password
     const isPasswordValid = await user.comparePassword(password);
 
