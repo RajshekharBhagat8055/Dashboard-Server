@@ -1,7 +1,7 @@
 {
-  "name": "balatro_admin_backend",
+  "name": "apex_admin_backend",
   "version": "1.0.0",
-  "description": "Backend for Balatro Admin Client",
+  "description": "Backend for the Apex admin dashboard (users, reports, 2D/3D game admin).",
   "main": "src/server.ts",
   "scripts": {
     "start": "node dist/server.js",

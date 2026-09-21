@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import User from "../models/User";
 import { generateTokenPair, verifyRefreshToken, generateAccessToken } from "../utils/jwt";
-import { canCreateRole, validateHierarchyChain, getRequiredHierarchyFields } from "../utils/hierarchy.helper";
+import { canCreateRole, resolveHierarchyForCreation } from "../utils/hierarchy.helper";
 import { findUserByUsername, trimUsername } from "../utils/username";
 import jwt from "jsonwebtoken";
 
@@ -425,6 +425,7 @@ const createUser = async (req: Request, res: Response) => {
       createdBy,
       superDistributorId,
       distributorId,
+      retailerId,
     } = req.body;
 
     // Validate required fields
@@ -461,57 +462,46 @@ const createUser = async (req: Request, res: Response) => {
       });
     }
 
-    // Validate hierarchy chain based on target role
-    const requiredFields = getRequiredHierarchyFields(role);
-
-    // Build hierarchy chain object
-    const hierarchyChain: any = {};
-    if (requiredFields.includes('superDistributorId')) {
-      if (!superDistributorId) {
-        return res.status(400).json({
-          success: false,
-          message: `Super Distributor is required for creating ${role}`
-        });
-      }
-      hierarchyChain.superDistributorId = superDistributorId;
+    // Load full creator record for hierarchy fields (not present on JWT)
+    const creatorDoc = await User.findById(req.user!._id).select(
+      "role superDistributorId distributorId retailerId"
+    );
+    if (!creatorDoc) {
+      return res.status(401).json({
+        success: false,
+        message: "Creator account not found",
+      });
     }
 
-    if (requiredFields.includes('distributorId')) {
-      if (!distributorId) {
-        return res.status(400).json({
-          success: false,
-          message: `Distributor is required for creating ${role}`
-        });
-      }
-      hierarchyChain.distributorId = distributorId;
+    const hierarchyResult = await resolveHierarchyForCreation(
+      {
+        _id: creatorDoc._id,
+        role: creatorDoc.role,
+        superDistributorId: creatorDoc.superDistributorId,
+        distributorId: creatorDoc.distributorId,
+        retailerId: creatorDoc.retailerId,
+      },
+      role,
+      { superDistributorId, distributorId, retailerId },
+    );
+
+    if (!hierarchyResult.isValid || !hierarchyResult.hierarchy) {
+      return res.status(400).json({
+        success: false,
+        message: hierarchyResult.error || "Invalid hierarchy chain",
+      });
     }
 
-    // Validate the hierarchy chain
-    if (requiredFields.length > 0) {
-      const validation = await validateHierarchyChain(hierarchyChain, role);
-      if (!validation.isValid) {
+    const resolved = hierarchyResult.hierarchy;
+
+    // Validate commission does not exceed direct parent's commission
+    if (commissionRate !== undefined && commissionRate !== null && role !== 'super_distributor' && role !== 'user') {
+      const parentUser = await User.findById(resolved.parentId).select('commissionRate username');
+      if (parentUser && commissionRate > parentUser.commissionRate) {
         return res.status(400).json({
           success: false,
-          message: validation.error || "Invalid hierarchy chain"
+          message: `Commission rate cannot exceed parent's commission of ${parentUser.commissionRate}%`,
         });
-      }
-    }
-
-    // Validate commission does not exceed parent's commission
-    // super_distributor is the top of the commission chain — only the 0-100 range applies
-    if (commissionRate !== undefined && commissionRate !== null && role !== 'super_distributor') {
-      let parentCommissionId: string | undefined;
-      if (role === 'distributor') parentCommissionId = superDistributorId;
-      else if (role === 'retailer' || role === 'user') parentCommissionId = distributorId;
-
-      if (parentCommissionId) {
-        const parentUser = await User.findById(parentCommissionId).select('commissionRate username');
-        if (parentUser && commissionRate > parentUser.commissionRate) {
-          return res.status(400).json({
-            success: false,
-            message: `Commission rate cannot exceed parent's commission of ${parentUser.commissionRate}%`
-          });
-        }
       }
     }
 
@@ -529,18 +519,7 @@ const createUser = async (req: Request, res: Response) => {
     // Generate uniqueId
     const uniqueId = (User as any).generateUniqueId(role);
 
-    // Determine parentId based on role
-    // Both user and retailer are direct children of distributor
-    let parentId;
-    if ((role === 'user' || role === 'retailer') && distributorId) {
-      parentId = distributorId;
-    } else if (role === 'distributor' && superDistributorId) {
-      parentId = superDistributorId;
-    } else if (role === 'super_distributor') {
-      parentId = req.user?._id;
-    }
-
-    // Create new user with hierarchy chain
+    // Create new user with resolved hierarchy chain
     const newUser = new User({
       username: normalizedUsername,
       password,
@@ -548,12 +527,13 @@ const createUser = async (req: Request, res: Response) => {
       role,
       uniqueId,
       creditBalance: creditBalance || 0,
-      commissionRate: commissionRate || 0,
+      commissionRate: role === 'user' ? 0 : (commissionRate || 0),
       status: status || 'active',
       createdBy: createdBy || req.user?._id,
-      parentId,
-      superDistributorId: hierarchyChain.superDistributorId,
-      distributorId: hierarchyChain.distributorId,
+      parentId: resolved.parentId,
+      superDistributorId: resolved.superDistributorId,
+      distributorId: resolved.distributorId,
+      retailerId: resolved.retailerId,
     });
 
     // Store plain password
@@ -575,6 +555,8 @@ const createUser = async (req: Request, res: Response) => {
           isActive: newUser.isActive,
           superDistributorId: newUser.superDistributorId,
           distributorId: newUser.distributorId,
+          retailerId: newUser.retailerId,
+          parentId: newUser.parentId,
           createdAt: newUser.createdAt
         }
       }
@@ -761,4 +743,4 @@ const getDusKaDumToken = async (req: Request, res: Response) => {
   }
 };
 
-export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken, getDusKaDumToken };
+export { login, logout, refreshToken, getProfile, changePassword, createUser, getSkillGameToken };

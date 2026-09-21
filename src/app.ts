@@ -95,7 +95,7 @@ app.use(express.urlencoded({ extended: true }));
 // Routes
 app.get('/', (req: Request, res: Response) => {
   res.json({
-    message: 'Balatro Admin Backend Server is running!',
+    message: 'Apex Admin Backend Server is running!',
     version: '1.0.0',
     environment: process.env.NODE_ENV || 'development'
   });

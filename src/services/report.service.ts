@@ -5,14 +5,6 @@ import {
   buildDrawDateFilter,
   type ReportYmdRange,
 } from '../utils/reportDateRange';
-import {
-  DUS_KA_DUM_GAME_TYPE,
-  fetchDusAdminGameAggregate,
-  fetchDusGameHistoryRows,
-  fetchDusPlayWinByUser,
-  fetchDusWalletTransactions,
-} from './dusKaDumReport.service';
-
 type UserRole = 'admin' | 'super_distributor' | 'distributor' | 'retailer' | 'user';
 
 interface AuthUser {
@@ -78,7 +70,43 @@ interface ScopedUser {
   username: string;
   role: UserRole;
   commissionRate?: number;
+  distributorId?: ObjectId;
+  superDistributorId?: ObjectId;
+  retailerId?: ObjectId;
+  parentId?: ObjectId;
 }
+
+/** Split play into retailer / distributor / SD commission slices (differential rates). */
+const computeTieredCommissions = (
+  play: number,
+  retailerRate: number,
+  distributorRate: number,
+  superDistributorRate: number,
+) => ({
+  retailer_commission: (play * retailerRate) / 100,
+  distributor_commission: (play * Math.max(0, distributorRate - retailerRate)) / 100,
+  super_commission: (play * Math.max(0, superDistributorRate - distributorRate)) / 100,
+});
+
+/**
+ * Bottom "retailer" rate for a leaf bettor:
+ * - retailer playing: own rate
+ * - mobile user under retailer: parent's retailer rate
+ * - legacy user under distributor (no retailerId): own rate (usually 0)
+ */
+const resolveRetailerRateForLeaf = (
+  leaf: { role: string; commissionRate?: number; retailerId?: ObjectId | string },
+  rateMap: Map<string, number>,
+): number => {
+  if (leaf.role === 'retailer') {
+    return Number(leaf.commissionRate || 0);
+  }
+  const retailerId = leaf.retailerId?.toString();
+  if (retailerId) {
+    return rateMap.get(retailerId) ?? 0;
+  }
+  return Number(leaf.commissionRate || 0);
+};
 
 interface ScopedContext {
   users: ScopedUser[];
@@ -123,6 +151,8 @@ const getScopedUsers = async (currentUser: AuthUser): Promise<ScopedContext> => 
     commissionRate: 1,
     distributorId: 1,
     superDistributorId: 1,
+    retailerId: 1,
+    parentId: 1,
   }).toArray()) as ScopedUser[];
 
   const userMap = new Map<string, ScopedUser>();
@@ -193,14 +223,20 @@ export class ReportService {
       const parentOid = new ObjectId(opts.parentId);
 
       if (parentRole === 'distributor') {
-        const roles = opts.childRole ? [opts.childRole] : ['retailer', 'user'];
-        nodeFilter = { role: { $in: roles }, distributorId: parentOid };
+        // Apex: distributor children are retailers only (users hang under retailers)
+        nodeFilter = opts.childRole
+          ? { role: opts.childRole, distributorId: parentOid }
+          : { role: 'retailer', distributorId: parentOid };
       } else if (parentRole === 'super_distributor') {
         nodeFilter = opts.childRole
           ? { role: opts.childRole, superDistributorId: parentOid }
           : { role: 'distributor', superDistributorId: parentOid };
       } else if (parentRole === 'admin') {
         nodeFilter = opts.childRole ? { role: opts.childRole } : { role: 'super_distributor' };
+      } else if (parentRole === 'retailer') {
+        nodeFilter = opts.childRole
+          ? { role: opts.childRole, retailerId: parentOid }
+          : { role: 'user', retailerId: parentOid };
       } else {
         nodeFilter = opts.childRole
           ? { role: opts.childRole, parentId: parentOid }
@@ -216,10 +252,14 @@ export class ReportService {
           ? { role: opts.childRole, superDistributorId: currentObjectId }
           : { role: 'distributor', superDistributorId: currentObjectId };
       } else if (role === 'distributor') {
-        const roles = opts?.childRole ? [opts.childRole] : ['retailer', 'user'];
-        nodeFilter = { role: { $in: roles }, distributorId: currentObjectId };
+        nodeFilter = opts?.childRole
+          ? { role: opts.childRole, distributorId: currentObjectId }
+          : { role: 'retailer', distributorId: currentObjectId };
+      } else if (role === 'retailer') {
+        nodeFilter = opts?.childRole
+          ? { role: opts.childRole, retailerId: currentObjectId }
+          : { role: 'user', retailerId: currentObjectId };
       }
-      // retailer/user: fall back to the flat scoped report below
     }
 
     // If drill-down mode is active, use node-aggregation approach.
@@ -277,24 +317,28 @@ export class ReportService {
 
       // Store leaf metadata for commission calculation during ticket aggregation
       const leafMetaMap = new Map<string, {
+        role: string;
         commissionRate: number;
+        retailerId?: string;
         distributorId?: string;
         superDistributorId?: string;
       }>();
       for (const leaf of allLeafDocs) {
         if (playerToChildNode.has(leaf._id.toString())) {
           leafMetaMap.set(leaf._id.toString(), {
+            role: leaf.role,
             commissionRate: Number(leaf.commissionRate || 0),
+            retailerId: leaf.retailerId?.toString(),
             distributorId: leaf.distributorId?.toString(),
             superDistributorId: leaf.superDistributorId?.toString(),
           });
         }
       }
 
-      // Two-pass ancestor rate lookup so we can resolve SD rate even from a retailer leaf
-      // (retailers only store distributorId, not superDistributorId directly)
+      // Ancestor rate lookup: retailers + distributors + SDs
       const pass1Ids = new Set<string>();
       for (const meta of leafMetaMap.values()) {
+        if (meta.retailerId) pass1Ids.add(meta.retailerId);
         if (meta.distributorId) pass1Ids.add(meta.distributorId);
         if (meta.superDistributorId) pass1Ids.add(meta.superDistributorId);
       }
@@ -346,11 +390,6 @@ export class ReportService {
         ticketUserIdGroupStage,
       ]).toArray();
 
-      const dusByUser = await fetchDusPlayWinByUser({
-        userIds: [...playerToChildNode.keys()],
-        dateFilter,
-      });
-
       // Accumulate per child-node: play/win + all three commission tiers from each leaf's rate chain
       type NodeBucket = {
         play: number; win: number;
@@ -373,24 +412,25 @@ export class ReportService {
         bucket.play += play;
         bucket.win += win;
 
-        // Always compute commissions from the leaf's own rate chain (backtracking)
+        // Apex chain: SD → D → R → user
+        // Retailer slice uses retailer rate (not mobile user's 0%)
         const meta = leafMetaMap.get(leafId);
-        const leafRate = meta?.commissionRate ?? 0;
+        const retailerRate = meta
+          ? resolveRetailerRateForLeaf(meta, ancestorRateMap)
+          : 0;
         const dtId = meta?.distributorId;
         const dtRate = dtId ? (ancestorRateMap.get(dtId) ?? 0) : 0;
         const sdId = meta?.superDistributorId ?? (dtId ? distributorToSDMap.get(dtId) : undefined);
         const sdRate = sdId ? (ancestorRateMap.get(sdId) ?? 0) : 0;
 
-        bucket.retailer_commission += (play * leafRate) / 100;
-        bucket.distributor_commission += (play * Math.max(0, dtRate - leafRate)) / 100;
-        bucket.super_commission += (play * Math.max(0, sdRate - dtRate)) / 100;
+        const tiers = computeTieredCommissions(play, retailerRate, dtRate, sdRate);
+        bucket.retailer_commission += tiers.retailer_commission;
+        bucket.distributor_commission += tiers.distributor_commission;
+        bucket.super_commission += tiers.super_commission;
       };
 
       for (const t of ticketAgg) {
         applyLeafPlayWin(String(t._id), Number(t.playPoint || 0), Number(t.winPoint || 0));
-      }
-      for (const dus of dusByUser.values()) {
-        applyLeafPlayWin(dus.userId, dus.playPoint, dus.winPoint);
       }
 
       const normalizedSearch = opts?.search?.trim().toLowerCase();
@@ -452,61 +492,56 @@ export class ReportService {
       { $sort: { playPoint: -1 } },
     ]).toArray();
 
-    const dusByUser = await fetchDusPlayWinByUser({
-      userIds: scopedUserIdStrings,
-      dateFilter,
-    });
-
-    const mergedByUser = new Map<string, { userId: string; playPoint: number; winPoint: number; endPoint: number }>();
-    for (const row of rows) {
+    const mergedRows = rows.map((row) => {
       const userId = String(row.userId);
       const playPoint = Number(row.playPoint || 0);
       const winPoint = Number(row.winPoint || 0);
-      mergedByUser.set(userId, {
+      return {
         userId,
         playPoint,
         winPoint,
         endPoint: playPoint - winPoint,
-      });
-    }
-    for (const dus of dusByUser.values()) {
-      const existing = mergedByUser.get(dus.userId);
-      if (existing) {
-        existing.playPoint += dus.playPoint;
-        existing.winPoint += dus.winPoint;
-        existing.endPoint = existing.playPoint - existing.winPoint;
-      } else {
-        mergedByUser.set(dus.userId, {
-          userId: dus.userId,
-          playPoint: dus.playPoint,
-          winPoint: dus.winPoint,
-          endPoint: dus.playPoint - dus.winPoint,
-        });
-      }
-    }
-    const mergedRows = [...mergedByUser.values()].sort((a, b) => b.playPoint - a.playPoint);
+      };
+    }).sort((a, b) => b.playPoint - a.playPoint);
 
-    // Build ancestor rate lookup for tiered commission calculation
+    // Build ancestor rate lookup for tiered commission calculation (retailer + D + SD)
     const flatAncestorIds = new Set<string>();
     for (const [, u] of userMap) {
-      const ux = u as any;
+      const ux = u as ScopedUser;
+      if (ux.retailerId) flatAncestorIds.add(ux.retailerId.toString());
       if (ux.distributorId) flatAncestorIds.add(ux.distributorId.toString());
       if (ux.superDistributorId) flatAncestorIds.add(ux.superDistributorId.toString());
     }
     const flatAncestorRateMap = new Map<string, number>();
+    const flatDistributorToSDMap = new Map<string, string>();
     if (flatAncestorIds.size > 0) {
       const aDocs = await userCollection.find(
         { _id: { $in: [...flatAncestorIds].map((id) => new ObjectId(id)) } },
-        { projection: { commissionRate: 1 } },
+        { projection: { commissionRate: 1, superDistributorId: 1, role: 1 } },
       ).toArray();
+      const pass2Ids = new Set<string>();
       for (const a of aDocs) {
         flatAncestorRateMap.set(a._id.toString(), Number((a as any).commissionRate || 0));
+        if ((a as any).role === 'distributor' && (a as any).superDistributorId) {
+          const sdId = (a as any).superDistributorId.toString();
+          flatDistributorToSDMap.set(a._id.toString(), sdId);
+          if (!flatAncestorRateMap.has(sdId)) pass2Ids.add(sdId);
+        }
+      }
+      if (pass2Ids.size > 0) {
+        const pass2Docs = await userCollection.find(
+          { _id: { $in: [...pass2Ids].map((id) => new ObjectId(id)) } },
+          { projection: { commissionRate: 1 } },
+        ).toArray();
+        for (const a of pass2Docs) {
+          flatAncestorRateMap.set(a._id.toString(), Number((a as any).commissionRate || 0));
+        }
       }
     }
 
     const normalizedSearch = opts?.search?.trim().toLowerCase();
     const enrichedRows = mergedRows.map((row) => {
-      const user = getUserByTicketUserId(userMap, row.userId) as any;
+      const user = getUserByTicketUserId(userMap, row.userId) as ScopedUser | undefined;
       const play = Number(row.playPoint || 0);
       const nodeRate = Number(user?.commissionRate || 0);
       const role: string = user?.role || 'user';
@@ -516,13 +551,28 @@ export class ReportService {
       let super_commission_amount = 0;
 
       if (role === 'retailer' || role === 'user') {
-        const dtRate = user?.distributorId ? (flatAncestorRateMap.get(user.distributorId.toString()) ?? 0) : 0;
-        const sdRate = user?.superDistributorId ? (flatAncestorRateMap.get(user.superDistributorId.toString()) ?? 0) : 0;
-        retailer_commission_amount = (play * nodeRate) / 100;
-        distributor_commission_amount = (play * Math.max(0, dtRate - nodeRate)) / 100;
-        super_commission_amount = (play * Math.max(0, sdRate - dtRate)) / 100;
+        const retailerRate = resolveRetailerRateForLeaf(
+          {
+            role,
+            commissionRate: nodeRate,
+            retailerId: user?.retailerId,
+          },
+          flatAncestorRateMap,
+        );
+        const dtId = user?.distributorId?.toString();
+        const dtRate = dtId ? (flatAncestorRateMap.get(dtId) ?? 0) : 0;
+        const sdId =
+          user?.superDistributorId?.toString() ??
+          (dtId ? flatDistributorToSDMap.get(dtId) : undefined);
+        const sdRate = sdId ? (flatAncestorRateMap.get(sdId) ?? 0) : 0;
+        const tiers = computeTieredCommissions(play, retailerRate, dtRate, sdRate);
+        retailer_commission_amount = tiers.retailer_commission;
+        distributor_commission_amount = tiers.distributor_commission;
+        super_commission_amount = tiers.super_commission;
       } else if (role === 'distributor') {
-        const sdRate = user?.superDistributorId ? (flatAncestorRateMap.get(user.superDistributorId.toString()) ?? 0) : 0;
+        const sdRate = user?.superDistributorId
+          ? (flatAncestorRateMap.get(user.superDistributorId.toString()) ?? 0)
+          : 0;
         distributor_commission_amount = (play * nodeRate) / 100;
         super_commission_amount = (play * Math.max(0, sdRate - nodeRate)) / 100;
       } else if (role === 'super_distributor') {
@@ -627,35 +677,26 @@ export class ReportService {
       description: String(tx.metadata?.reason || tx.type || ''),
     }));
 
-    const usernameByUserId = new Map<string, string>();
-    for (const [id, user] of userMap) usernameByUserId.set(id, user.username);
-
-    const dusRows = await fetchDusWalletTransactions({
-      userIds: scopedUserIdStrings,
-      usernameByUserId,
-      dateFilter,
-      types: typeFilter ?? undefined,
-      search: options.search,
-      limit: MERGE_CAP,
-    });
-
-    const merged = [...skillRows, ...dusRows].sort(
-      (a, b) => new Date(String(b.createdAt || 0)).getTime() - new Date(String(a.createdAt || 0)).getTime(),
-    );
-    const total = mongoTotal + dusRows.length;
-    const rows = merged.slice(skip, skip + options.limit);
+    const rows = skillRows.slice(skip, skip + options.limit);
+    const total = mongoTotal;
 
     return { transactions: rows, total, page: options.page, limit: options.limit };
   }
 
   static async getCommissionPayoutReport(currentUser: AuthUser, dateFilter: ReportDateFilter, roleFilter?: string, search?: string) {
-    const { users, scopedTicketUserIds, scopedUserIdStrings } = await getScopedUsers(currentUser);
+    const arkaDb = getArkaDb();
+    const userCollection = arkaDb.collection('users');
+    const { users, scopedTicketUserIds } = await getScopedUsers(currentUser);
     if (!scopedTicketUserIds.length) {
       return { rows: [], totals: { totalBet: 0, totalCommission: 0 } };
     }
 
     const payoutRoleSet = new Set<UserRole>(['super_distributor', 'distributor', 'retailer']);
     const eligibleRows = users.filter((user) => payoutRoleSet.has(user.role));
+
+    // Leaf bettors in scope (mobile users + retailers who may play)
+    const leafUsers = users.filter((u) => u.role === 'user' || u.role === 'retailer');
+    const leafIdSet = new Set(leafUsers.map((u) => u._id.toString()));
 
     const matchStage: Record<string, unknown> = {
       userId: { $in: scopedTicketUserIds },
@@ -668,36 +709,88 @@ export class ReportService {
       { $match: matchStage },
       {
         $group: {
-          _id: '$userId',
+          _id: { $toString: '$userId' },
           totalBet: { $sum: { $ifNull: ['$totalPoint', 0] } },
         },
       },
     ]).toArray();
 
-    const directTotals = new Map<string, number>();
+    const leafPlayMap = new Map<string, number>();
     for (const row of totalsByUser) {
-      directTotals.set(String(row._id), Number(row.totalBet || 0));
+      const id = String(row._id);
+      if (leafIdSet.has(id)) {
+        leafPlayMap.set(id, Number(row.totalBet || 0));
+      }
     }
 
-    const dusByUser = await fetchDusPlayWinByUser({
-      userIds: scopedUserIdStrings,
-      dateFilter,
-    });
-    for (const dus of dusByUser.values()) {
-      directTotals.set(dus.userId, (directTotals.get(dus.userId) || 0) + dus.playPoint);
+    // Rate map for all scoped users + ensure SD rates for distributors
+    const rateMap = new Map<string, number>();
+    const distributorToSDMap = new Map<string, string>();
+    for (const u of users) {
+      rateMap.set(u._id.toString(), Number(u.commissionRate || 0));
+      if (u.role === 'distributor' && u.superDistributorId) {
+        distributorToSDMap.set(u._id.toString(), u.superDistributorId.toString());
+      }
+    }
+    // Fill any missing SD rates referenced by distributors
+    const missingSdIds = [...distributorToSDMap.values()].filter((id) => !rateMap.has(id));
+    if (missingSdIds.length > 0) {
+      const sdDocs = await userCollection.find(
+        { _id: { $in: missingSdIds.map((id) => new ObjectId(id)) } },
+        { projection: { commissionRate: 1 } },
+      ).toArray();
+      for (const a of sdDocs) {
+        rateMap.set(a._id.toString(), Number((a as any).commissionRate || 0));
+      }
+    }
+
+    // Accumulate totalBet + earned commission per hierarchy party
+    const betUnder = new Map<string, number>();
+    const earned = new Map<string, number>();
+    for (const u of eligibleRows) {
+      betUnder.set(u._id.toString(), 0);
+      earned.set(u._id.toString(), 0);
+    }
+
+    for (const leaf of leafUsers) {
+      const play = leafPlayMap.get(leaf._id.toString()) || 0;
+      if (play <= 0) continue;
+
+      const retailerId =
+        leaf.role === 'retailer' ? leaf._id.toString() : leaf.retailerId?.toString();
+      const distributorId = leaf.distributorId?.toString();
+      const sdId =
+        leaf.superDistributorId?.toString() ??
+        (distributorId ? distributorToSDMap.get(distributorId) : undefined);
+
+      const retailerRate = resolveRetailerRateForLeaf(leaf, rateMap);
+      const dtRate = distributorId ? (rateMap.get(distributorId) ?? 0) : 0;
+      const sdRate = sdId ? (rateMap.get(sdId) ?? 0) : 0;
+      const tiers = computeTieredCommissions(play, retailerRate, dtRate, sdRate);
+
+      if (retailerId && betUnder.has(retailerId)) {
+        betUnder.set(retailerId, (betUnder.get(retailerId) || 0) + play);
+        earned.set(retailerId, (earned.get(retailerId) || 0) + tiers.retailer_commission);
+      }
+      if (distributorId && betUnder.has(distributorId)) {
+        betUnder.set(distributorId, (betUnder.get(distributorId) || 0) + play);
+        earned.set(distributorId, (earned.get(distributorId) || 0) + tiers.distributor_commission);
+      }
+      if (sdId && betUnder.has(sdId)) {
+        betUnder.set(sdId, (betUnder.get(sdId) || 0) + play);
+        earned.set(sdId, (earned.get(sdId) || 0) + tiers.super_commission);
+      }
     }
 
     const rows = eligibleRows.map((user) => {
       const userId = user._id.toString();
-      const userTotal = directTotals.get(userId) || 0;
-      const commissionRate = Number(user.commissionRate || 0);
       return {
         userId,
         username: user.username,
         role: user.role,
-        commissionRate,
-        totalBet: userTotal,
-        commissionEarned: (userTotal * commissionRate) / 100,
+        commissionRate: Number(user.commissionRate || 0),
+        totalBet: betUnder.get(userId) || 0,
+        commissionEarned: earned.get(userId) || 0,
       };
     }).filter((row) => {
       const matchesRole = !roleFilter || roleFilter === 'all' || row.role === roleFilter;
@@ -744,18 +837,6 @@ export class ReportService {
       },
       { $sort: { totalBetPoint: -1 } },
     ]).toArray();
-
-    const dusAgg = await fetchDusAdminGameAggregate({ dateFilter });
-    if (dusAgg && (dusAgg.totalBetPoint > 0 || dusAgg.totalWonPoint > 0)) {
-      rows.push({
-        gameName: 'DUS-KA-DUM Game',
-        gameType: DUS_KA_DUM_GAME_TYPE,
-        totalBetPoint: dusAgg.totalBetPoint,
-        totalWonPoint: dusAgg.totalWonPoint,
-        commissionAmount: dusAgg.totalBetPoint - dusAgg.totalWonPoint,
-      });
-      rows.sort((a, b) => Number(b.totalBetPoint || 0) - Number(a.totalBetPoint || 0));
-    }
 
     const normalizedSearch = search?.trim().toLowerCase();
     const filteredRows = rows.filter((row) => !normalizedSearch || String(row.gameName).toLowerCase().includes(normalizedSearch));
@@ -808,22 +889,11 @@ export class ReportService {
     }
 
     const normalizedGameType = options.gameType?.trim().toLowerCase();
-    const includeSkill =
-      !normalizedGameType ||
-      normalizedGameType === 'all' ||
-      normalizedGameType === '2d' ||
-      normalizedGameType === '3d';
-    const includeDus =
-      !normalizedGameType ||
-      normalizedGameType === 'all' ||
-      normalizedGameType === DUS_KA_DUM_GAME_TYPE ||
-      normalizedGameType === 'dus_ka_dum' ||
-      normalizedGameType === 'duskadum';
 
     const limit = Math.min(500, Math.max(1, options.limit ?? 500));
     const skillRows: Array<Record<string, unknown>> = [];
 
-    if (includeSkill) {
+    {
       const matchStage: Record<string, unknown> = {
         userId: { $in: scopedTicketUserIds },
       };
@@ -941,30 +1011,10 @@ export class ReportService {
       }
     }
 
-    let dusRows: Array<Record<string, unknown>> = [];
-    if (includeDus) {
-      const usernameByUserId = new Map<string, string>();
-      for (const [id, user] of userMap) {
-        usernameByUserId.set(id, user.username);
-      }
-      const fetched = await fetchDusGameHistoryRows({
-        userIds: scopedUserIdStrings,
-        usernameByUserId,
-        dateFilter,
-        exactDate: options.exactDate,
-        username: options.username,
-        search: options.search,
-        limit,
-      });
-      dusRows = fetched.map((row) => ({ ...row }));
-    }
-
     const normalizedSearch = options.search?.trim().toLowerCase();
-    const merged = [...skillRows, ...dusRows]
+    const merged = [...skillRows]
       .filter((row) => {
         if (!normalizedSearch) return true;
-        // Dus rows are already search-filtered in fetchDusGameHistoryRows
-        if (row.gameType === DUS_KA_DUM_GAME_TYPE) return true;
         const hay = [
           row.username,
           row.gameType,

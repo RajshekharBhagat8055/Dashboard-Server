@@ -975,6 +975,82 @@ const getChildrenUnderDistributor = async (req: Request, res: Response) => {
     }
 };
 
+/**
+ * Get mobile users under a specific retailer
+ * Used in hierarchy drill-down
+ */
+const getUsersUnderRetailer = async (req: Request, res: Response) => {
+    try {
+        const userId = req.user?._id;
+        const { retailerId } = req.params;
+
+        if (!userId) {
+            return res.status(401).json({
+                success: false,
+                message: "Authentication required",
+            });
+        }
+
+        if (!retailerId) {
+            return res.status(400).json({
+                success: false,
+                message: "Retailer ID is required",
+            });
+        }
+
+        const retailer = await User.findById(retailerId).select('role distributorId superDistributorId').lean();
+        if (!retailer || retailer.role !== 'retailer') {
+            return res.status(404).json({
+                success: false,
+                message: "Retailer not found",
+            });
+        }
+
+        if (req.user?.role === 'admin') {
+            // ok
+        } else if (req.user?.role === 'super_distributor') {
+            if (retailer.superDistributorId?.toString() !== userId.toString()) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - This retailer is not under you",
+                });
+            }
+        } else if (req.user?.role === 'distributor') {
+            if (retailer.distributorId?.toString() !== userId.toString()) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - This retailer is not under you",
+                });
+            }
+        } else if (req.user?.role === 'retailer') {
+            if (userId.toString() !== retailerId) {
+                return res.status(403).json({
+                    success: false,
+                    message: "Access denied - You can only view your own users",
+                });
+            }
+        } else {
+            return res.status(403).json({
+                success: false,
+                message: "Access denied",
+            });
+        }
+
+        const users = await UserService.getUsersUnderRetailer(retailerId);
+        return res.status(200).json({
+            success: true,
+            data: users,
+            count: users.length,
+        });
+    } catch (error) {
+        console.error(`Error in getUsersUnderRetailer: ${error}`);
+        return res.status(500).json({
+            success: false,
+            message: "Internal server error",
+        });
+    }
+};
+
 const getCreditContext = async (req: Request, res: Response) => {
     try {
         const userId = req.user?._id;
@@ -1098,6 +1174,7 @@ export {
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
     getChildrenUnderDistributor,
+    getUsersUnderRetailer,
 
     // Credit context and logs
     getCreditContext,

@@ -35,11 +35,11 @@ const connectDB = async(): Promise<void> => {
             throw new Error('MONGODB_URI is required');
         }
 
-        const arkaDbName = process.env.DB_NAME || 'ArkaAdmin';
+        const arkaDbName = process.env.DB_NAME || 'ApexAdmin';
         const skillGameDbName =
             process.env.SKILL_GAME_DB_NAME ||
             process.env.TICKETS_DB_NAME ||
-            'SkillGameDB';
+            'ApexDB';
 
         const connectionUri = buildConnectionUri(uri, arkaDbName);
 
@@ -60,14 +60,14 @@ const connectDB = async(): Promise<void> => {
 
 const getArkaDb = (): mongoose.Connection => {
     if (!arkaDb) {
-        throw new Error('ArkaAdmin database is not initialized. Call connectDB() first.');
+        throw new Error('Admin database is not initialized. Call connectDB() first.');
     }
     return arkaDb;
 };
 
 const getSkillGameDb = (): mongoose.Connection => {
     if (!skillGameDb) {
-        throw new Error('SkillGameDB database is not initialized. Call connectDB() first.');
+        throw new Error('Apex game database is not initialized. Call connectDB() first.');
     }
     return skillGameDb;
 };

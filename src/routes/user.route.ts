@@ -41,6 +41,7 @@ import {
     getDistributorsUnderSuperDistributor,
     getRetailersUnderDistributor,
     getChildrenUnderDistributor,
+    getUsersUnderRetailer,
 
     // Credit context and logs
     getCreditContext,
@@ -80,7 +81,8 @@ userRouter.get('/online-users', getOnlineUsers); // All authenticated users
 userRouter.get('/hierarchy/super-distributors', getSuperDistributorsForHierarchy); // Get SDs for hierarchy selection
 userRouter.get('/hierarchy/super-distributor/:superDistributorId/distributors', getDistributorsUnderSuperDistributor); // Get distributors under SD
 userRouter.get('/hierarchy/distributor/:distributorId/retailers', getRetailersUnderDistributor); // Get retailers under distributor
-userRouter.get('/hierarchy/distributor/:distributorId/children', getChildrenUnderDistributor); // Get retailers + users under distributor
+userRouter.get('/hierarchy/distributor/:distributorId/children', getChildrenUnderDistributor); // Legacy: retailers + users
+userRouter.get('/hierarchy/retailer/:retailerId/users', getUsersUnderRetailer); // Get users under retailer
 
 // ============ CREDIT CONTEXT & LOGS ============
 userRouter.get('/user/:id/credit-context', getCreditContext); // Get credit transfer context
