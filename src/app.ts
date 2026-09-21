@@ -42,11 +42,9 @@ const corsOptions = {
 
     // Production origins (always allowed)
     allowedOrigins.push(
-      'https://arka-dashboard-hub.vercel.app', // Your Vercel frontend
-      /^https:\/\/arka-dashboard-hub.*\.vercel\.app$/, // Vercel preview deployments
-      'https://dashboard-server-s25r.onrender.com', // Your current Render backend URL
-      'https://lstar.online',
-      'https://www.lstar.online',
+      
+      'https://apex-online.xyz',
+      'https://www.apex-online.xyz',
       'https://72.60.220.10'
     );
 
