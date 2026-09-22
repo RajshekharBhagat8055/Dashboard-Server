@@ -5,22 +5,9 @@ let arkaDb: mongoose.Connection | null = null;
 let skillGameDb: mongoose.Connection | null = null;
 
 const buildConnectionUri = (uri: string, dbName: string): string => {
-    let connectionUri = uri;
-    const uriParts = uri.split('/');
-
-    if (uriParts.length > 3) {
-        const lastPart = uriParts[uriParts.length - 1];
-        if (lastPart && !lastPart.includes('@') && !lastPart.includes('?')) {
-            uriParts[uriParts.length - 1] = dbName;
-            connectionUri = uriParts.join('/');
-        } else {
-            connectionUri = uri.endsWith('/') ? `${uri}${dbName}` : `${uri}/${dbName}`;
-        }
-    } else {
-        connectionUri = uri.endsWith('/') ? `${uri}${dbName}` : `${uri}/${dbName}`;
-    }
-
-    return connectionUri;
+    const parsed = new URL(uri);
+    parsed.pathname = `/${dbName}`;
+    return parsed.toString();
 };
 
 const connectDB = async(): Promise<void> => {
