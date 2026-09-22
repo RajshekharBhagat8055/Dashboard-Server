@@ -15,7 +15,7 @@ async function checkHierarchy() {
 
         // Connect to MongoDB
         const uri = process.env.MONGODB_URI || 'mongodb://localhost:27017';
-        const dbName = process.env.DB_NAME || 'ArkaAdmin';
+        const dbName = process.env.DB_NAME || 'PZskillAdmin';
 
         // Append database name to URI
         let mongoUri = uri;

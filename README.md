@@ -1,6 +1,6 @@
-﻿# Balatro Admin Backend
+﻿# PZskill Admin Backend
 
-A TypeScript/Node.js backend API for the Balatro Admin system, providing comprehensive management for distributors, retailers, super distributors, and online players.
+A TypeScript/Node.js backend API for the PZskill Admin system, providing comprehensive management for distributors, retailers, super distributors, and online players.
 
 ## Features
 
@@ -56,7 +56,7 @@ docs/               # API documentation
 1. Clone the repository
    `ash
    git clone <repository-url>
-   cd balatro_admin_backend
+   cd pzskill_admin_backend
    `
 
 2. Install dependencies

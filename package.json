@@ -1,7 +1,7 @@
 {
-  "name": "balatro_admin_backend",
+  "name": "pzskill_admin_backend",
   "version": "1.0.0",
-  "description": "Backend for Balatro Admin Client",
+  "description": "Backend for PZskill Admin Client",
   "main": "src/server.ts",
   "scripts": {
     "start": "node dist/server.js",

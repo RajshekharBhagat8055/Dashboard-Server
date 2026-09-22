@@ -13,7 +13,7 @@ function parseArgs() {
   // Show help
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`
-🎯 Balatro Admin User Creator
+🎯 PZskill Admin User Creator
 
 Usage: npm run create-admin [options]
 
@@ -110,7 +110,7 @@ function validateArgs(args: any) {
   return {
     username: args.username,
     password: args.password,
-    email: args.email || `${args.username}@balatro.com`,
+    email: args.email || `${args.username}@pzskill.com`,
     role: args.role || 'admin',
     creditBalance: args.creditBalance || 0,
     commissionRate: args.commissionRate || 0

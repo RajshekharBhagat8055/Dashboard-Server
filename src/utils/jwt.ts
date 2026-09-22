@@ -20,8 +20,8 @@ const JWT_REFRESH_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || '7d'; // 7 
 export const generateAccessToken = (payload: JWTPayload): string => {
   return jwt.sign(payload, JWT_ACCESS_SECRET, {
     expiresIn: JWT_ACCESS_EXPIRES_IN,
-    issuer: 'balatro-admin-backend',
-    audience: 'balatro-admin-frontend'
+    issuer: 'pzskill-admin-backend',
+    audience: 'pzskill-admin-frontend'
   } as jwt.SignOptions);
 };
 
@@ -31,8 +31,8 @@ export const generateAccessToken = (payload: JWTPayload): string => {
 export const generateRefreshToken = (payload: { userId: string }): string => {
   return jwt.sign(payload, JWT_REFRESH_SECRET, {
     expiresIn: JWT_REFRESH_EXPIRES_IN,
-    issuer: 'balatro-admin-backend',
-    audience: 'balatro-admin-frontend'
+    issuer: 'pzskill-admin-backend',
+    audience: 'pzskill-admin-frontend'
   } as jwt.SignOptions);
 };
 
@@ -42,8 +42,8 @@ export const generateRefreshToken = (payload: { userId: string }): string => {
 export const verifyAccessToken = (token: string): JWTPayload => {
   try {
     const decoded = jwt.verify(token, JWT_ACCESS_SECRET, {
-      issuer: 'balatro-admin-backend',
-      audience: 'balatro-admin-frontend'
+      issuer: 'pzskill-admin-backend',
+      audience: 'pzskill-admin-frontend'
     }) as JWTPayload;
 
     return decoded;
@@ -64,8 +64,8 @@ export const verifyAccessToken = (token: string): JWTPayload => {
 export const verifyRefreshToken = (token: string): { userId: string } => {
   try {
     const decoded = jwt.verify(token, JWT_REFRESH_SECRET, {
-      issuer: 'balatro-admin-backend',
-      audience: 'balatro-admin-frontend'
+      issuer: 'pzskill-admin-backend',
+      audience: 'pzskill-admin-frontend'
     }) as { userId: string };
 
     return decoded;

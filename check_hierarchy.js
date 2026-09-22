@@ -3,7 +3,7 @@ const User = require('./dist/models/User').default;
 
 async function checkUsers() {
   try {
-    await mongoose.connect('mongodb://localhost:27017/balatro');
+    await mongoose.connect('mongodb://localhost:27017/pzskill_admin');
 
     const users = await User.find({
       username: { $in: ['admin_sd_1_u_1', 'admin_sd_1_d_1_r_1', 'admin_sd_1_d_1_u_1', 'admin_sd_1_d_1_r_1_u_1'] }

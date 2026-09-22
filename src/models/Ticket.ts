@@ -68,7 +68,7 @@ ticketSchema.index({ userId: 1, createdAt: -1 });
 ticketSchema.index({ drawDate: 1, status: 1 });
 
 /**
- * Tickets live in the game DB (e.g. MahalaxmiDB); admin users live in MahalaxmiAdmin.
+ * Tickets live in the game DB (e.g. PZskillDB); admin users live in PZskillAdmin.
  * MongoDB $lookup cannot join across databases, so reports aggregate tickets here and merge User in app code.
  */
 export function getTicketsDbConnection(): mongoose.Connection {
