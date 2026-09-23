@@ -57,8 +57,24 @@ const ticketUserIdGroupStage = {
     _id: { $toString: '$userId' },
     playPoint: { $sum: { $ifNull: ['$totalPoint', 0] } },
     winPoint: { $sum: { $ifNull: ['$winPoint', 0] } },
+    claimPoint: {
+      $sum: {
+        $cond: [
+          { $and: [{ $eq: ['$claimed', true] }, { $gt: ['$winPoint', 0] }] },
+          { $ifNull: ['$winPoint', 0] },
+          0,
+        ],
+      },
+    },
   },
 };
+
+const emptyTurnoverTotals = () => ({
+  playPoint: 0,
+  winPoint: 0,
+  claimPoint: 0,
+  endPoint: 0,
+});
 
 const applyTransactionDateFilter = (query: Record<string, unknown>, dateFilter: ReportDateFilter) => {
   const createdAt = buildCreatedAtMatch(dateFilter);
@@ -217,7 +233,7 @@ export class ReportService {
         { projection: { role: 1 } },
       );
       if (!parentDoc) {
-        return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
+        return { rows: [], totals: emptyTurnoverTotals() };
       }
       const parentRole = parentDoc.role as string;
       const parentOid = new ObjectId(opts.parentId);
@@ -282,7 +298,7 @@ export class ReportService {
       })[];
 
       if (!childNodes.length) {
-        return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
+        return { rows: [], totals: emptyTurnoverTotals() };
       }
 
       const childNodeIdStrings = new Set(childNodes.map((n) => n._id.toString()));
@@ -372,7 +388,7 @@ export class ReportService {
 
       const scopedPlayerIds = [...playerToChildNode.keys()].map((id) => new ObjectId(id));
       if (!scopedPlayerIds.length) {
-        return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
+        return { rows: [], totals: emptyTurnoverTotals() };
       }
 
       const scopedTicketUserIds: Array<string | ObjectId> = [];
@@ -390,20 +406,29 @@ export class ReportService {
         ticketUserIdGroupStage,
       ]).toArray();
 
-      // Accumulate per child-node: play/win + all three commission tiers from each leaf's rate chain
+      // Accumulate per child-node: play/win/claim + all three commission tiers from each leaf's rate chain
       type NodeBucket = {
-        play: number; win: number;
+        play: number;
+        win: number;
+        claim: number;
         retailer_commission: number;
         distributor_commission: number;
         super_commission: number;
       };
       const bucketByNode = new Map<string, NodeBucket>();
       for (const n of childNodes) {
-        bucketByNode.set(n._id.toString(), { play: 0, win: 0, retailer_commission: 0, distributor_commission: 0, super_commission: 0 });
+        bucketByNode.set(n._id.toString(), {
+          play: 0,
+          win: 0,
+          claim: 0,
+          retailer_commission: 0,
+          distributor_commission: 0,
+          super_commission: 0,
+        });
       }
 
-      const applyLeafPlayWin = (leafId: string, play: number, win: number) => {
-        if (play <= 0 && win <= 0) return;
+      const applyLeafPlayWin = (leafId: string, play: number, win: number, claim: number) => {
+        if (play <= 0 && win <= 0 && claim <= 0) return;
         const nodeId = playerToChildNode.get(leafId);
         if (!nodeId) return;
         const bucket = bucketByNode.get(nodeId);
@@ -411,6 +436,7 @@ export class ReportService {
 
         bucket.play += play;
         bucket.win += win;
+        bucket.claim += claim;
 
         // Apex chain: SD → D → R → user
         // Retailer slice uses retailer rate (not mobile user's 0%)
@@ -430,7 +456,12 @@ export class ReportService {
       };
 
       for (const t of ticketAgg) {
-        applyLeafPlayWin(String(t._id), Number(t.playPoint || 0), Number(t.winPoint || 0));
+        applyLeafPlayWin(
+          String(t._id),
+          Number(t.playPoint || 0),
+          Number(t.winPoint || 0),
+          Number(t.claimPoint || 0),
+        );
       }
 
       const normalizedSearch = opts?.search?.trim().toLowerCase();
@@ -444,6 +475,7 @@ export class ReportService {
             role: node.role,
             playPoint: b.play,
             winPoint: b.win,
+            claimPoint: b.claim,
             endPoint: b.play - b.win,
             commissionRate: Number(node.commissionRate || 0),
             retailer_commission_amount: b.retailer_commission,
@@ -457,8 +489,14 @@ export class ReportService {
         .sort((a, b) => b.playPoint - a.playPoint);
 
       const totals = rows.reduce(
-        (acc, r) => { acc.playPoint += r.playPoint; acc.winPoint += r.winPoint; acc.endPoint += r.endPoint; return acc; },
-        { playPoint: 0, winPoint: 0, endPoint: 0 },
+        (acc, r) => {
+          acc.playPoint += r.playPoint;
+          acc.winPoint += r.winPoint;
+          acc.claimPoint += r.claimPoint;
+          acc.endPoint += r.endPoint;
+          return acc;
+        },
+        emptyTurnoverTotals(),
       );
 
       return { rows, totals };
@@ -467,7 +505,7 @@ export class ReportService {
     // Flat scoped report (retailer/user role, or when no drill-down filter applies)
     const { scopedTicketUserIds, scopedUserIdStrings, userMap } = await getScopedUsers(currentUser);
     if (!scopedTicketUserIds.length) {
-      return { rows: [], totals: { playPoint: 0, winPoint: 0, endPoint: 0 } };
+      return { rows: [], totals: emptyTurnoverTotals() };
     }
 
     const matchStage: Record<string, unknown> = {
@@ -486,6 +524,7 @@ export class ReportService {
           userId: '$_id',
           playPoint: 1,
           winPoint: 1,
+          claimPoint: 1,
           endPoint: { $subtract: ['$playPoint', '$winPoint'] },
         },
       },
@@ -496,10 +535,12 @@ export class ReportService {
       const userId = String(row.userId);
       const playPoint = Number(row.playPoint || 0);
       const winPoint = Number(row.winPoint || 0);
+      const claimPoint = Number(row.claimPoint || 0);
       return {
         userId,
         playPoint,
         winPoint,
+        claimPoint,
         endPoint: playPoint - winPoint,
       };
     }).sort((a, b) => b.playPoint - a.playPoint);
@@ -585,6 +626,7 @@ export class ReportService {
         role,
         playPoint: play,
         winPoint: Number(row.winPoint || 0),
+        claimPoint: Number(row.claimPoint || 0),
         endPoint: Number(row.endPoint || 0),
         commissionRate: nodeRate,
         retailer_commission_amount,
@@ -597,9 +639,10 @@ export class ReportService {
     const totals = enrichedRows.reduce((acc, row) => {
       acc.playPoint += row.playPoint;
       acc.winPoint += row.winPoint;
+      acc.claimPoint += row.claimPoint;
       acc.endPoint += row.endPoint;
       return acc;
-    }, { playPoint: 0, winPoint: 0, endPoint: 0 });
+    }, emptyTurnoverTotals());
 
     return { rows: enrichedRows, totals };
   }
@@ -970,6 +1013,8 @@ export class ReportService {
       for (const ticket of tickets) {
         const playPoint = Number(ticket.totalPoint || 0);
         const wonPoint = Number(ticket.winPoint || 0);
+        const claimed = Boolean(ticket.claimed);
+        const claimPoint = claimed && wonPoint > 0 ? wonPoint : 0;
         const drawDate = String(ticket.drawDate || '');
         const drawTime = String(ticket.drawTime || '');
         const slotKey = drawDate && drawTime ? `${drawDate}|${drawTime}` : '';
@@ -995,6 +1040,7 @@ export class ReportService {
           drawTime,
           playPoint,
           wonPoint,
+          claimPoint,
           endPoint: playPoint - wonPoint,
           gameResult,
           status,
@@ -1027,6 +1073,7 @@ export class ReportService {
           row.gameResult,
           String(row.playPoint),
           String(row.wonPoint),
+          String(row.claimPoint ?? 0),
           String(row.endPoint),
         ]
           .join(' ')

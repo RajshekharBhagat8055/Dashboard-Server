@@ -1,6 +1,10 @@
 import { ObjectId } from "mongodb";
 import User from "../models/User";
 import { getTicketModel } from "../models/Ticket";
+import {
+    buildDrawDateFilter,
+    formatUtcAsYmdInReportTz,
+} from "../utils/reportDateRange";
 
 export interface HierarchyUser {
     _id: ObjectId
@@ -415,7 +419,7 @@ export class UserService {
                 isBanned: false,
                 role: { $ne: 'admin' }
             })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity')
             .sort({lastActivity: -1})
             .lean();
         } else if (currentUser.role === 'super_distributor') {
@@ -429,12 +433,14 @@ export class UserService {
             onlineUsers = hierarchyUsers.filter(user => user.isOnline);
         }
 
-        // Aggregate ticket stats for online users
+        // Aggregate today's ticket stats for online users (play / win / claim / end)
         const userIds = onlineUsers.map(u => u._id);
         let ticketStatsMap = new Map<string, { playPoints: number; winPoints: number; claimPoints: number; endPoints: number }>();
 
         if (userIds.length > 0) {
             try {
+                const todayYmd = formatUtcAsYmdInReportTz(new Date());
+                const todayDrawFilter = buildDrawDateFilter({ fromYmd: todayYmd, toYmd: todayYmd }) ?? {};
                 const Ticket = getTicketModel();
                 const ticketStats = await Ticket.aggregate<{
                     _id: ObjectId;
@@ -442,7 +448,13 @@ export class UserService {
                     winPoints: number;
                     claimPoints: number;
                 }>([
-                    { $match: { userId: { $in: userIds } } },
+                    {
+                        $match: {
+                            userId: { $in: userIds },
+                            status: { $ne: 'cancelled' },
+                            ...todayDrawFilter,
+                        },
+                    },
                     {
                         $group: {
                             _id: '$userId',

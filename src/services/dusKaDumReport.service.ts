@@ -22,6 +22,7 @@ export interface DusGameHistoryRow {
   drawTime: string;
   playPoint: number;
   wonPoint: number;
+  claimPoint: number;
   endPoint: number;
   gameResult: string | null;
   status: DusHistoryStatus;
@@ -230,6 +231,7 @@ export async function fetchDusGameHistoryRows(options: {
         drawTime,
         playPoint,
         wonPoint,
+        claimPoint: status === 'claimed' ? wonPoint : 0,
         endPoint: playPoint - wonPoint,
         gameResult,
         status,
