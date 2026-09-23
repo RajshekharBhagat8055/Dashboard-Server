@@ -97,6 +97,13 @@ function determineActionType(req: Request): LogAction | null {
         }
     }
 
+    if (originalUrl.startsWith('/api/reports/')) {
+        // Only the real deletion; the preview step changes nothing.
+        if (path.includes('/delete-range') && method === 'POST' && req.body?.mode === 'delete') {
+            return 'GAME_HISTORY_DELETE';
+        }
+    }
+
     if (originalUrl.startsWith('/api/games/')) {
         // Game router actions
         if (method === 'GET') {
@@ -170,6 +177,11 @@ function extractRequestDetails(req: Request): LogDetails {
         // Generic description for other operations
         if (req.body.description) {
             details.description = req.body.description;
+        }
+
+        // Game history deletion range
+        if (req.body.from || req.body.to) {
+            details.metadata = { ...(details.metadata ?? {}), from: req.body.from, to: req.body.to };
         }
 
         // Store changes for updates (simplified)

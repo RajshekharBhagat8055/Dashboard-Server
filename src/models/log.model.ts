@@ -10,6 +10,12 @@ export type LogAction =
     | 'CREDIT_TRANSFER' | 'CREDIT_ADJUSTMENT' | 'COMMISSION_PAYOUT'
     // Game Operations
     | 'GAME_START' | 'GAME_END' | 'BET_PLACED' | 'GAME_WIN' | 'GAME_LOSS'
+    | 'BET_CANCELLED' | 'TICKET_CLAIMED'
+    // Written by the game server (wallets, results, pot)
+    | 'WALLET_DEPOSIT' | 'WALLET_WITHDRAW' | 'WALLET_SET'
+    | 'RESULT_EDIT_2D' | 'RESULT_EDIT_3D' | 'RESULT_PUBLISH' | 'RESULT_GENERATE'
+    | 'POT_ADD_BALANCE' | 'POT_RESET_BALANCE'
+    | 'GAME_HISTORY_DELETE'
     // Administrative
     | 'SYSTEM_CONFIG_CHANGE' | 'BULK_OPERATION'
     // Other
@@ -79,6 +85,12 @@ const logSchema = new Schema<ILog>({
             'CREDIT_TRANSFER', 'CREDIT_ADJUSTMENT', 'COMMISSION_PAYOUT',
             // Game Operations
             'GAME_START', 'GAME_END', 'BET_PLACED', 'GAME_WIN', 'GAME_LOSS',
+            'BET_CANCELLED', 'TICKET_CLAIMED',
+            // Written by the game server (wallets, results, pot)
+            'WALLET_DEPOSIT', 'WALLET_WITHDRAW', 'WALLET_SET',
+            'RESULT_EDIT_2D', 'RESULT_EDIT_3D', 'RESULT_PUBLISH', 'RESULT_GENERATE',
+            'POT_ADD_BALANCE', 'POT_RESET_BALANCE',
+            'GAME_HISTORY_DELETE',
             // Administrative
             'SYSTEM_CONFIG_CHANGE', 'BULK_OPERATION',
             // Other
