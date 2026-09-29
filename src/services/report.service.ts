@@ -3,6 +3,10 @@ import { getArkaDb, getSkillGameDb } from '../config/connectDB';
 import {
   buildCreatedAtMatch,
   buildDrawDateFilter,
+  formatUtcAsYmdInReportTz,
+  reportDayEndUtc,
+  reportDayStartUtc,
+  reportTimezone,
   type ReportYmdRange,
 } from '../utils/reportDateRange';
 import {
@@ -145,6 +149,117 @@ const getUserByTicketUserId = (userMap: Map<string, ScopedUser>, ticketUserId: u
   if (!ticketUserId) return undefined;
   const asString = String(ticketUserId);
   return userMap.get(asString);
+};
+
+/** Convert ticket drawTime ("3:30 PM" / "15:30") → Result.time ("15:30"). */
+const normalizeDrawTimeTo24h = (drawTime: string): string | null => {
+  const raw = String(drawTime || '').trim().toUpperCase();
+  if (!raw) return null;
+
+  const ampm = raw.match(/^(\d{1,2})\s*:\s*(\d{2})(?::\s*\d{2})?\s*(AM|PM)$/);
+  if (ampm) {
+    let hour = parseInt(ampm[1], 10);
+    const minute = ampm[2];
+    const period = ampm[3];
+    if (period === 'PM' && hour !== 12) hour += 12;
+    if (period === 'AM' && hour === 12) hour = 0;
+    return `${String(hour).padStart(2, '0')}:${minute}`;
+  }
+
+  const h24 = raw.match(/^(\d{1,2})\s*:\s*(\d{2})(?::\s*\d{2})?$/);
+  if (h24) {
+    const hour = parseInt(h24[1], 10);
+    const minute = h24[2];
+    if (hour < 0 || hour > 23) return null;
+    return `${String(hour).padStart(2, '0')}:${minute}`;
+  }
+
+  return null;
+};
+
+const formatResultSample = (
+  resultDoc: Record<string, unknown>,
+  gameType: string,
+  drawDate: string,
+  drawTime: string,
+): string => {
+  if (gameType === '3d' && resultDoc.results3D) {
+    const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
+    return `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`;
+  }
+  const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
+  const first = filters[0] as { columns?: string[] } | undefined;
+  const sample = first?.columns?.[0];
+  return sample ? `${drawTime} · ${sample}` : `${drawDate} ${drawTime}`;
+};
+
+/**
+ * Load all published results covering the given draw dates in one query,
+ * keyed by `${YYYY-MM-DD}|${HH:mm}` for O(1) ticket joins.
+ */
+const loadPublishedResultsBySlot = async (
+  drawDates: string[],
+): Promise<Map<string, Record<string, unknown>>> => {
+  const bySlot = new Map<string, Record<string, unknown>>();
+  const uniqueDates = [...new Set(drawDates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)))].sort();
+  if (uniqueDates.length === 0) return bySlot;
+
+  const minDate = uniqueDates[0];
+  const maxDate = uniqueDates[uniqueDates.length - 1];
+  const rangeStart = reportDayStartUtc(minDate);
+  const rangeEnd = reportDayEndUtc(maxDate);
+
+  const resultCollection = getSkillGameDb().collection('results');
+  const docs = await resultCollection
+    .find(
+      {
+        isPublished: true,
+        $or: [
+          { timeSlot: { $gte: rangeStart, $lte: rangeEnd } },
+          { date: { $gte: rangeStart, $lte: rangeEnd } },
+        ],
+      },
+      {
+        projection: {
+          time: 1,
+          date: 1,
+          timeSlot: 1,
+          results: 1,
+          results3D: 1,
+          isPublished: 1,
+        },
+      },
+    )
+    .toArray();
+
+  for (const doc of docs) {
+    const timeSlot = doc.timeSlot ? new Date(doc.timeSlot as Date) : null;
+    const dayFromSlot = timeSlot && !Number.isNaN(timeSlot.getTime())
+      ? formatUtcAsYmdInReportTz(timeSlot)
+      : null;
+    const dayFromDate = doc.date ? formatUtcAsYmdInReportTz(new Date(doc.date as Date)) : null;
+    const dayKey = dayFromSlot || dayFromDate;
+    if (!dayKey) continue;
+
+    let time24 = typeof doc.time === 'string' ? normalizeDrawTimeTo24h(doc.time) : null;
+    if (!time24 && timeSlot && !Number.isNaN(timeSlot.getTime())) {
+      // Derive HH:mm in report TZ from timeSlot instant.
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone: reportTimezone(),
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).formatToParts(timeSlot);
+      const hh = parts.find((p) => p.type === 'hour')?.value ?? '00';
+      const mm = parts.find((p) => p.type === 'minute')?.value ?? '00';
+      time24 = `${hh === '24' ? '00' : hh}:${mm}`;
+    }
+    if (!time24) continue;
+
+    bySlot.set(`${dayKey}|${time24}`, doc as Record<string, unknown>);
+  }
+
+  return bySlot;
 };
 
 const getTransactionTypeFilter = (type?: string): string[] | null => {
@@ -802,11 +917,6 @@ export class ReportService {
       limit?: number;
     },
   ) {
-    const { scopedTicketUserIds, scopedUserIdStrings, userMap } = await getScopedUsers(currentUser);
-    if (!scopedTicketUserIds.length) {
-      return { rows: [] as Array<Record<string, unknown>> };
-    }
-
     const normalizedGameType = options.gameType?.trim().toLowerCase();
     const includeSkill =
       !normalizedGameType ||
@@ -820,13 +930,44 @@ export class ReportService {
       normalizedGameType === 'dus_ka_dum' ||
       normalizedGameType === 'duskadum';
 
+    // Admin skill-only with no username filter does not need the full user tree
+    // (that load was a major stall when the panel had thousands of users).
+    const needsScopedUsers =
+      currentUser.role !== 'admin' ||
+      includeDus ||
+      Boolean(options.username?.trim());
+
+    const scoped = needsScopedUsers
+      ? await getScopedUsers(currentUser)
+      : {
+          users: [] as ScopedUser[],
+          scopedUserIdStrings: [] as string[],
+          scopedUserObjectIds: [] as ObjectId[],
+          scopedTicketUserIds: [] as Array<string | ObjectId>,
+          userMap: new Map<string, ScopedUser>(),
+        };
+
+    const { scopedTicketUserIds, scopedUserIdStrings, userMap } = scoped;
+
+    if (needsScopedUsers && !scopedTicketUserIds.length) {
+      return { rows: [] as Array<Record<string, unknown>> };
+    }
+
     const limit = Math.min(500, Math.max(1, options.limit ?? 500));
     const skillRows: Array<Record<string, unknown>> = [];
 
     if (includeSkill) {
-      const matchStage: Record<string, unknown> = {
-        userId: { $in: scopedTicketUserIds },
-      };
+      const matchStage: Record<string, unknown> = {};
+
+      // Admin with no username filter: skip huge userId $in (was scanning with thousands of ids).
+      // Non-admin / username filter: keep scoped user filter.
+      const usernameFilter = options.username?.trim();
+      if (currentUser.role !== 'admin' || usernameFilter) {
+        if (!scopedTicketUserIds.length) {
+          return { rows: [] as Array<Record<string, unknown>> };
+        }
+        matchStage.userId = { $in: scopedTicketUserIds };
+      }
 
       if (options.exactDate && /^\d{4}-\d{2}-\d{2}$/.test(options.exactDate)) {
         const exactClause = buildDrawDateFilter({ fromYmd: options.exactDate, toYmd: options.exactDate });
@@ -839,79 +980,73 @@ export class ReportService {
         matchStage.gameType = normalizedGameType;
       }
 
-      if (options.username?.trim()) {
-        matchStage.username = options.username.trim();
+      if (usernameFilter) {
+        matchStage.username = usernameFilter;
       }
 
       const ticketCollection = getSkillGameDb().collection('tickets');
-      const tickets = await ticketCollection.find(matchStage)
+      const tickets = await ticketCollection
+        .find(matchStage, {
+          projection: {
+            username: 1,
+            gameType: 1,
+            gameId: 1,
+            barcode: 1,
+            drawDate: 1,
+            drawTime: 1,
+            totalPoint: 1,
+            winPoint: 1,
+            status: 1,
+            claimed: 1,
+            items: 1,
+            createdAt: 1,
+            userId: 1,
+          },
+        })
         .sort({ createdAt: -1 })
         .limit(limit)
         .toArray();
 
-      const resultCollection = getSkillGameDb().collection('results');
-      const slotKeys = new Set<string>();
-      for (const ticket of tickets) {
-        if (ticket.status === 'result_pending') continue;
-        const drawDate = String(ticket.drawDate || '');
-        const drawTime = String(ticket.drawTime || '');
-        if (drawDate && drawTime) slotKeys.add(`${drawDate}|${drawTime}`);
-      }
-
+      const drawDates: string[] = [];
       const gameTypeBySlot = new Map<string, string>();
       for (const ticket of tickets) {
         const drawDate = String(ticket.drawDate || '');
         const drawTime = String(ticket.drawTime || '');
         if (!drawDate || !drawTime) continue;
-        const key = `${drawDate}|${drawTime}`;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(drawDate)) drawDates.push(drawDate);
+        const time24 = normalizeDrawTimeTo24h(drawTime);
+        if (!time24) continue;
+        const key = `${drawDate}|${time24}`;
         if (!gameTypeBySlot.has(key)) {
           gameTypeBySlot.set(key, String(ticket.gameType || '2d'));
         }
       }
 
-      const resultBySlot = new Map<string, string>();
-      await Promise.all(
-        Array.from(slotKeys).map(async (key) => {
-          const [drawDate, drawTime] = key.split('|');
-          const dateStart = new Date(`${drawDate}T00:00:00`);
-          const dateEnd = new Date(`${drawDate}T23:59:59.999`);
-          const resultDoc = await resultCollection.findOne({
-            time: drawTime,
-            date: { $gte: dateStart, $lte: dateEnd },
-            isPublished: true,
-          });
-          if (!resultDoc) {
-            resultBySlot.set(key, `${drawDate} ${drawTime}`);
-            return;
-          }
-          const gameType = gameTypeBySlot.get(key) || '2d';
-          if (gameType === '3d' && resultDoc.results3D) {
-            const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
-            resultBySlot.set(key, `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`);
-            return;
-          }
-          const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
-          const first = filters[0] as { columns?: string[] } | undefined;
-          const sample = first?.columns?.[0];
-          resultBySlot.set(key, sample ? `${drawTime} · ${sample}` : `${drawDate} ${drawTime}`);
-        }),
-      );
+      const resultsBySlot = await loadPublishedResultsBySlot(drawDates);
 
       for (const ticket of tickets) {
         const playPoint = Number(ticket.totalPoint || 0);
         const wonPoint = Number(ticket.winPoint || 0);
         const drawDate = String(ticket.drawDate || '');
         const drawTime = String(ticket.drawTime || '');
-        const slotKey = drawDate && drawTime ? `${drawDate}|${drawTime}` : '';
+        const time24 = normalizeDrawTimeTo24h(drawTime);
+        const slotKey = drawDate && time24 ? `${drawDate}|${time24}` : '';
         const status = ReportService.deriveTicketHistoryStatus({
           status: ticket.status as string | undefined,
           winPoint: ticket.winPoint as number | undefined,
           claimed: ticket.claimed as boolean | undefined,
         });
-        const gameResult =
-          status === 'No Result Declare'
-            ? null
-            : (slotKey ? resultBySlot.get(slotKey) ?? `${drawDate} ${drawTime}` : null);
+
+        let gameResult: string | null = null;
+        if (status !== 'No Result Declare') {
+          const resultDoc = slotKey ? resultsBySlot.get(slotKey) : undefined;
+          if (resultDoc) {
+            const gameType = gameTypeBySlot.get(slotKey) || String(ticket.gameType || '2d');
+            gameResult = formatResultSample(resultDoc, gameType, drawDate, drawTime);
+          } else {
+            gameResult = `${drawDate} ${drawTime}`;
+          }
+        }
 
         skillRows.push({
           id: ticket._id.toString(),

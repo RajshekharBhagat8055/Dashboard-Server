@@ -11,7 +11,8 @@
     "create-admin": "ts-node src/scripts/createAdmin.ts",
     "check-hierarchy": "ts-node src/scripts/check-hierarchy.ts",
     "update-hierarchy": "ts-node src/scripts/update-hierarchy.ts",
-    "migrate-username-index": "ts-node src/scripts/migrate-username-index.ts"
+    "migrate-username-index": "ts-node src/scripts/migrate-username-index.ts",
+    "ensure:report-indexes": "ts-node src/scripts/ensureReportIndexes.ts"
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
