@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate } from '../middleware/auth';
+import { authenticate, authorize } from '../middleware/auth';
 import {
     getAllLogs,
     getLogsByUser,
@@ -11,8 +11,10 @@ import {
 
 const logRouter = Router();
 
-// All log routes require authentication and admin access
+// All log routes require authentication and admin access. Logs include every
+// player's bets, logins and every admin action — never expose them to other roles.
 logRouter.use(authenticate);
+logRouter.use(authorize('admin'));
 
 // ============ ADMIN LOG ENDPOINTS (admin only) ============
 

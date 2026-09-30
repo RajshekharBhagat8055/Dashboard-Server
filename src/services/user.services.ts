@@ -1,6 +1,10 @@
 import { ObjectId } from "mongodb";
 import User from "../models/User";
 import { getTicketModel } from "../models/Ticket";
+import {
+    buildDrawDateFilter,
+    formatUtcAsYmdInReportTz,
+} from "../utils/reportDateRange";
 
 export interface HierarchyUser {
     _id: ObjectId
@@ -35,7 +39,33 @@ export interface HierarchyStats {
 
 const LIST_FIELDS = 'username uniqueId creditBalance isOnline isActive isBanned createdAt role lastActivity commissionRate parentId';
 
+/** Soft-deleted users are hidden from hierarchy lists, counts and login. */
+const NOT_DELETED = { deletedAt: null } as const;
+
 export class UserService {
+
+    /** BFS collect target + all descendants (non-deleted by default). */
+    static async collectSubtreeIds(
+        rootId: string,
+        opts: { includeDeleted?: boolean } = {},
+    ): Promise<string[]> {
+        const ids: string[] = [rootId];
+        const queue: string[] = [rootId];
+        while (queue.length > 0) {
+            const parentIds = queue.splice(0, queue.length);
+            const filter: Record<string, unknown> = { parentId: { $in: parentIds } };
+            if (!opts.includeDeleted) {
+                filter.deletedAt = null;
+            }
+            const children = await User.find(filter).select('_id').lean();
+            for (const child of children) {
+                const childId = child._id.toString();
+                ids.push(childId);
+                queue.push(childId);
+            }
+        }
+        return ids;
+    }
 
     /** Attach each user's direct parent username for Refer Name columns */
     private static async attachParentUsernames(users: any[]): Promise<HierarchyUser[]> {
@@ -65,6 +95,7 @@ export class UserService {
     static async getAllSuperDistributors(): Promise<HierarchyUser[]> {
         const users = await User.find({
             role: "super_distributor",
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -75,6 +106,7 @@ export class UserService {
     static async getAllDistributors(): Promise<HierarchyUser[]> {
         const distributors = await User.find({
             role: 'distributor',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -85,6 +117,7 @@ export class UserService {
     static async getAllRetailers(): Promise<HierarchyUser[]> {
         const retailers = await User.find({
             role: 'retailer',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -95,6 +128,7 @@ export class UserService {
     static async getAllUsers(): Promise<HierarchyUser[]> {
         const users = await User.find({
             role: 'user',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -104,13 +138,14 @@ export class UserService {
 
     static async getAdminStats(): Promise<HierarchyStats> {
         const [superDistributorsCount, distributorsCount, retailersCount, usersCount] = await Promise.all([
-            User.countDocuments({ role: 'super_distributor' }),
-            User.countDocuments({ role: 'distributor' }),
-            User.countDocuments({ role: 'retailer' }),
-            User.countDocuments({ role: 'user' })
+            User.countDocuments({ role: 'super_distributor', ...NOT_DELETED }),
+            User.countDocuments({ role: 'distributor', ...NOT_DELETED }),
+            User.countDocuments({ role: 'retailer', ...NOT_DELETED }),
+            User.countDocuments({ role: 'user', ...NOT_DELETED })
         ]);
 
         const totalPointsResult = await User.aggregate([
+            { $match: NOT_DELETED },
             { $group: { _id: null, total: { $sum: '$creditBalance' } } }
         ]);
 
@@ -129,6 +164,7 @@ export class UserService {
         const distributors = await User.find({
             superDistributorId: superDistributorId,
             role: 'distributor',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -139,7 +175,8 @@ export class UserService {
     static async getRetailersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
         const retailers = await User.find({
             superDistributorId: superDistributorId,
-            role: 'retailer'
+            role: 'retailer',
+            ...NOT_DELETED,
         })
         .select(LIST_FIELDS)
         .sort({createdAt: -1})
@@ -151,7 +188,8 @@ export class UserService {
     static async getUsersUnderSuperDistributor(superDistributorId: string): Promise<HierarchyUser[]> {
         const users = await User.find({
             superDistributorId: superDistributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         })
         .select(LIST_FIELDS)
         .sort({createdAt: -1})
@@ -164,19 +202,22 @@ export class UserService {
         // Get distributors count using hierarchy field
         const distributorsCount = await User.countDocuments({
             superDistributorId: superDistributorId,
-            role: 'distributor'
+            role: 'distributor',
+            ...NOT_DELETED,
         });
 
         // Get retailers count using hierarchy field
         const retailersCount = await User.countDocuments({
             superDistributorId: superDistributorId,
-            role: 'retailer'
+            role: 'retailer',
+            ...NOT_DELETED,
         });
 
         // Get users count using hierarchy field
         const usersCount = await User.countDocuments({
             superDistributorId: superDistributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         });
 
         // Get total points from all users in the hierarchy
@@ -189,21 +230,24 @@ export class UserService {
         // Add all distributors under this SD
         const distributors = await User.find({
             superDistributorId: superDistributorId,
-            role: 'distributor'
+            role: 'distributor',
+            ...NOT_DELETED,
         }).select('_id').lean();
         distributors.forEach(d => hierarchyUserIds.add(d._id));
 
         // Add all retailers under this SD
         const retailers = await User.find({
             superDistributorId: superDistributorId,
-            role: 'retailer'
+            role: 'retailer',
+            ...NOT_DELETED,
         }).select('_id').lean();
         retailers.forEach(r => hierarchyUserIds.add(r._id));
 
         // Add all users under this SD
         const users = await User.find({
             superDistributorId: superDistributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         }).select('_id').lean();
         users.forEach(u => hierarchyUserIds.add(u._id));
 
@@ -236,6 +280,7 @@ export class UserService {
         const retailers = await User.find({
             distributorId: distributorId,
             role: 'retailer',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -246,7 +291,8 @@ export class UserService {
     static async getUsersUnderDistributor(distributorId: string): Promise<HierarchyUser[]> {
         const users = await User.find({
             distributorId: distributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         })
         .select(LIST_FIELDS)
         .sort({createdAt: -1})
@@ -259,13 +305,15 @@ export class UserService {
         // Get retailers count using hierarchy field
         const retailersCount = await User.countDocuments({
             distributorId: distributorId,
-            role: 'retailer'
+            role: 'retailer',
+            ...NOT_DELETED,
         });
 
         // Get users count using hierarchy field
         const usersCount = await User.countDocuments({
             distributorId: distributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         });
 
         // Get total points from all hierarchy levels
@@ -278,14 +326,16 @@ export class UserService {
         // Add all retailers under this distributor
         const retailers = await User.find({
             distributorId: distributorId,
-            role: 'retailer'
+            role: 'retailer',
+            ...NOT_DELETED,
         }).select('_id').lean();
         retailers.forEach(r => hierarchyUserIds.add(r._id));
 
         // Add all users under this distributor
         const users = await User.find({
             distributorId: distributorId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         }).select('_id').lean();
         users.forEach(u => hierarchyUserIds.add(u._id));
 
@@ -318,6 +368,7 @@ export class UserService {
         const users = await User.find({
             retailerId: retailerId,
             role: 'user',
+            ...NOT_DELETED,
         }).select(LIST_FIELDS)
         .sort({createdAt: -1})
         .lean();
@@ -329,7 +380,8 @@ export class UserService {
         // Get users count
         const usersCount = await User.countDocuments({
             createdBy: retailerId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         });
 
         // Get total points from all hierarchy levels
@@ -342,7 +394,8 @@ export class UserService {
         // Add all users created by retailer
         const retailerUsers = await User.find({
             createdBy: retailerId,
-            role: 'user'
+            role: 'user',
+            ...NOT_DELETED,
         }).select('_id').lean();
         retailerUsers.forEach(user => hierarchyUserIds.add(user._id));
 
@@ -382,7 +435,7 @@ export class UserService {
                 isBanned: false,
                 role: { $ne: 'admin' }
             })
-            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity playPoints winPoints claimPoints endPoints')
+            .select('username uniqueId creditBalance isOnline isActive isBanned createdAt role lastLogin lastActivity')
             .sort({lastActivity: -1})
             .lean();
         } else if (currentUser.role === 'super_distributor') {
@@ -396,12 +449,14 @@ export class UserService {
             onlineUsers = hierarchyUsers.filter(user => user.isOnline);
         }
 
-        // Aggregate ticket stats for online users
+        // Aggregate today's ticket stats for online users (play / win / claim / end)
         const userIds = onlineUsers.map(u => u._id);
         let ticketStatsMap = new Map<string, { playPoints: number; winPoints: number; claimPoints: number; endPoints: number }>();
 
         if (userIds.length > 0) {
             try {
+                const todayYmd = formatUtcAsYmdInReportTz(new Date());
+                const todayDrawFilter = buildDrawDateFilter({ fromYmd: todayYmd, toYmd: todayYmd }) ?? {};
                 const Ticket = getTicketModel();
                 const ticketStats = await Ticket.aggregate<{
                     _id: ObjectId;
@@ -409,7 +464,13 @@ export class UserService {
                     winPoints: number;
                     claimPoints: number;
                 }>([
-                    { $match: { userId: { $in: userIds } } },
+                    {
+                        $match: {
+                            userId: { $in: userIds },
+                            status: { $ne: 'cancelled' },
+                            ...todayDrawFilter,
+                        },
+                    },
                     {
                         $group: {
                             _id: '$userId',
@@ -800,14 +861,14 @@ export class UserService {
         return updatedUser;
     }
 
-    static async deleteUser(userId: string, currentUser: any): Promise<void> {
+    static async deleteUser(userId: string, currentUser: any): Promise<{ deletedCount: number }> {
         if (currentUser.role !== 'admin') {
             const error = new Error('Access denied - Only admin can delete users');
             (error as any).status = 403;
             throw error;
         }
 
-        const targetUser = await User.findById(userId);
+        const targetUser = await User.findOne({ _id: userId, ...NOT_DELETED });
         if (!targetUser) {
             const error = new Error('User not found');
             (error as any).status = 404;
@@ -820,21 +881,31 @@ export class UserService {
             throw error;
         }
 
-        // Collect the entire subtree using iterative BFS
-        const idsToDelete: string[] = [userId];
-        const queue: string[] = [userId];
+        const idsToDelete = await UserService.collectSubtreeIds(userId);
+        const now = new Date();
 
-        while (queue.length > 0) {
-            const parentIds = queue.splice(0, queue.length);
-            const children = await User.find({ parentId: { $in: parentIds } }).select('_id').lean();
-            for (const child of children) {
-                const childId = child._id.toString();
-                idsToDelete.push(childId);
-                queue.push(childId);
-            }
+        // Soft-delete cascade: hide from panel/app/login, free the username for reuse,
+        // keep the rows so tickets and reports still resolve to a user.
+        const rows = await User.find({ _id: { $in: idsToDelete }, ...NOT_DELETED }).select('_id username').lean();
+        for (const row of rows) {
+            const idHex = row._id.toString().replace(/[^a-f0-9]/gi, '').slice(0, 8);
+            const base = String(row.username || 'user').slice(0, 37);
+            await User.updateOne(
+                { _id: row._id },
+                {
+                    $set: {
+                        deletedAt: now,
+                        isBanned: true,
+                        isActive: false,
+                        isOnline: false,
+                        status: 'inactive',
+                        username: `${base}~del~${idHex}`,
+                    },
+                },
+            );
         }
 
-        await User.deleteMany({ _id: { $in: idsToDelete } });
+        return { deletedCount: rows.length };
     }
 
     static async transferCredit(userId: string, amount: number, currentUser: any, password: string): Promise<HierarchyUser> {
@@ -1075,7 +1146,21 @@ export class UserService {
             (error as any).status = 400;
             throw error;
         }
-        const updatedUser = await User.findByIdAndUpdate(userId, { $set: { isBanned: true, isActive: false, isOnline: false } }, { new: true }).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        if (targetUser.deletedAt) {
+            const error = new Error('Cannot ban a deleted user');
+            (error as any).status = 400;
+            throw error;
+        }
+
+        // Ban cascades to the whole downline.
+        const banIds = await UserService.collectSubtreeIds(userId);
+        await User.updateMany(
+            { _id: { $in: banIds }, ...NOT_DELETED },
+            { $set: { isBanned: true, isActive: false, isOnline: false, status: 'banned' } },
+        );
+
+        const updatedUser = await User.findById(userId)
+            .select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
         if(!updatedUser) {
             const error = new Error('Failed to ban user');
             (error as any).status = 500;
@@ -1089,6 +1174,11 @@ export class UserService {
         if (!targetUser) {
             const error = new Error('User not found');
             (error as any).status = 404;
+            throw error;
+        }
+        if (targetUser.deletedAt) {
+            const error = new Error('Cannot unban a deleted user');
+            (error as any).status = 400;
             throw error;
         }
     
@@ -1151,12 +1241,15 @@ export class UserService {
             throw error;
         }
     
-        // Unban the user (but don't automatically activate - let admin decide)
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
-            { $set: { isBanned: false, isActive: true  } }, // Keep isActive as is, let admin decide separately
-            { new: true }
-        ).select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
+        // Unban cascades to the whole downline.
+        const unbanIds = await UserService.collectSubtreeIds(userId);
+        await User.updateMany(
+            { _id: { $in: unbanIds }, ...NOT_DELETED },
+            { $set: { isBanned: false, isActive: true, status: 'active' } },
+        );
+
+        const updatedUser = await User.findById(userId)
+            .select('username email uniqueId creditBalance commissionRate isOnline isActive isBanned createdAt role');
     
         if (!updatedUser) {
             const error = new Error('User not found');

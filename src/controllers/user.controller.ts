@@ -495,10 +495,11 @@ const deleteUser = async (req: Request, res: Response) => {
             });
         }
 
-        await UserService.deleteUser(id, currentUser);
+        const result = await UserService.deleteUser(id, currentUser);
         return res.status(200).json({
             success: true,
             message: "User deleted successfully",
+            data: result,
         });
     } catch (error: any) {
         console.error(`Error in deleteUser: ${error}`);

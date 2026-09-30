@@ -22,7 +22,7 @@ const login = async (req: Request, res: Response) => {
     // Find user by username (case-insensitive; login works with AS1 or as1)
     const user = await findUserByUsername(username);
 
-    if (!user) {
+    if (!user || user.deletedAt) {
       return res.status(401).json({
         success: false,
         message: "Invalid credentials"
