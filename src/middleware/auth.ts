@@ -2,6 +2,9 @@ import { Request, Response, NextFunction } from 'express';
 import User from '../models/User';
 import { verifyAccessToken, extractTokenFromHeader, JWTPayload } from '../utils/jwt';
 
+/** lastActivity only needs minute precision; skip the write when it is fresher. */
+const LAST_ACTIVITY_TOUCH_MS = 60_000;
+
 // Extend Express Request interface to include user
 declare global {
   namespace Express {
@@ -28,7 +31,9 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
     const decoded = verifyAccessToken(token);
 
     // Check if user exists and is active
-    const user = await User.findById(decoded.userId);
+    const user = await User.findById(decoded.userId)
+      .select('isActive isBanned lastActivity')
+      .lean();
 
     if (!user) {
       return res.status(401).json({
@@ -44,8 +49,6 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       });
     }
 
-    console.log("User Role:", user.role);
-
     // Attach user info to request
     req.user = {
       _id: user._id.toString(),
@@ -55,8 +58,13 @@ export const authenticate = async (req: Request, res: Response, next: NextFuncti
       uniqueId: decoded.uniqueId
     };
 
-    // Update last activity
-    await User.findByIdAndUpdate(user._id, { lastActivity: new Date() });
+    // Record activity at most once a minute, without holding up the request.
+    const lastActivityMs = user.lastActivity ? new Date(user.lastActivity).getTime() : 0;
+    if (Date.now() - lastActivityMs >= LAST_ACTIVITY_TOUCH_MS) {
+      User.updateOne({ _id: user._id }, { $set: { lastActivity: new Date() } }).catch((err) => {
+        console.error('Failed to update lastActivity:', err);
+      });
+    }
 
     next();
   } catch (error) {

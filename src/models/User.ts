@@ -215,6 +215,7 @@ userSchema.index({ role: 1 });
 userSchema.index({ parentId: 1 });
 userSchema.index({ createdBy: 1 });
 userSchema.index({ isOnline: 1 });
+userSchema.index({ sessionId: 1 }); // Game server socket join-session lookup
 userSchema.index({ status: 1 });
 userSchema.index({ superDistributorId: 1 });
 userSchema.index({ distributorId: 1 });
