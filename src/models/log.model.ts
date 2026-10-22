@@ -13,7 +13,7 @@ export type LogAction =
     | 'BET_CANCELLED' | 'TICKET_CLAIMED'
     // Written by the game server (wallets, results, pot)
     | 'WALLET_DEPOSIT' | 'WALLET_WITHDRAW' | 'WALLET_SET'
-    | 'RESULT_EDIT_2D' | 'RESULT_EDIT_3D' | 'RESULT_PUBLISH' | 'RESULT_GENERATE'
+    | 'RESULT_EDIT_2D' | 'RESULT_EDIT_3D' | 'RESULT_EDIT_GREEN_WIN' | 'RESULT_PUBLISH' | 'RESULT_GENERATE'
     | 'POT_RESET_BALANCE'
     | 'GAME_HISTORY_DELETE'
     // Administrative
@@ -88,7 +88,7 @@ const logSchema = new Schema<ILog>({
             'BET_CANCELLED', 'TICKET_CLAIMED',
             // Written by the game server (wallets, results, pot)
             'WALLET_DEPOSIT', 'WALLET_WITHDRAW', 'WALLET_SET',
-            'RESULT_EDIT_2D', 'RESULT_EDIT_3D', 'RESULT_PUBLISH', 'RESULT_GENERATE',
+            'RESULT_EDIT_2D', 'RESULT_EDIT_3D', 'RESULT_EDIT_GREEN_WIN', 'RESULT_PUBLISH', 'RESULT_GENERATE',
             'POT_RESET_BALANCE',
             'GAME_HISTORY_DELETE',
             // Administrative

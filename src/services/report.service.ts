@@ -187,6 +187,12 @@ const formatResultSample = (
     const r3d = resultDoc.results3D as { A?: string; B?: string; C?: string };
     return `${r3d.A ?? '000'}-${r3d.B ?? '000'}-${r3d.C ?? '000'}`;
   }
+  if (gameType === 'green-win') {
+    const gw = resultDoc.resultGreenWin
+      ? String(resultDoc.resultGreenWin).toUpperCase()
+      : '';
+    return gw || `${drawDate} ${drawTime}`;
+  }
   const filters = Array.isArray(resultDoc.results) ? resultDoc.results : [];
   const first = filters[0] as { columns?: string[] } | undefined;
   const sample = first?.columns?.[0];
@@ -226,6 +232,7 @@ const loadPublishedResultsBySlot = async (
           timeSlot: 1,
           results: 1,
           results3D: 1,
+          resultGreenWin: 1,
           isPublished: 1,
         },
       },
@@ -922,7 +929,8 @@ export class ReportService {
       !normalizedGameType ||
       normalizedGameType === 'all' ||
       normalizedGameType === '2d' ||
-      normalizedGameType === '3d';
+      normalizedGameType === '3d' ||
+      normalizedGameType === 'green-win';
     const includeDus =
       !normalizedGameType ||
       normalizedGameType === 'all' ||
@@ -976,7 +984,11 @@ export class ReportService {
         applyTicketDateFilter(matchStage, dateFilter);
       }
 
-      if (normalizedGameType === '2d' || normalizedGameType === '3d') {
+      if (
+        normalizedGameType === '2d' ||
+        normalizedGameType === '3d' ||
+        normalizedGameType === 'green-win'
+      ) {
         matchStage.gameType = normalizedGameType;
       }
 
@@ -1161,7 +1173,7 @@ export class ReportService {
       confirmToken,
       message:
         previewCount > 0
-          ? `This will delete ${previewCount} skill-game (2d/3d) ticket records. Dus Ka Dum tickets are not deleted.`
+          ? `This will delete ${previewCount} skill-game (2d/3d/green-win) ticket records. Dus Ka Dum tickets are not deleted.`
           : 'No skill-game records found for this range. Dus Ka Dum tickets are not included in delete.',
     };
   }

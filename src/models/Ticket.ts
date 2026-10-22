@@ -9,7 +9,7 @@ export interface ITicketItem {
   seriesLetter: string;
 }
 
-export type GameType = '2d' | '3d';
+export type GameType = '2d' | '3d' | 'green-win';
 
 export interface ITicket extends Document {
   userId: Types.ObjectId;
@@ -59,7 +59,7 @@ const ticketSchema = new Schema<ITicket>(
     claimed: { type: Boolean, default: false },
     winPoint: { type: Number, default: 0, min: 0 },
     items: { type: [ticketItemSchema], required: true },
-    gameType: { type: String, enum: ['2d', '3d'], default: '2d' }
+    gameType: { type: String, enum: ['2d', '3d', 'green-win'], default: '2d' }
   },
   { timestamps: true }
 );
