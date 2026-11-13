@@ -314,6 +314,10 @@ export interface DusTransactionRow {
   balanceAfter: number;
   createdAt: Date | string | null;
   description: string;
+  balanceBefore: number;
+  direction: 'credit' | 'debit';
+  action: string;
+  reference: { code: string; drawDate: string; drawTime: string } | null;
 }
 
 interface DusWalletSqlRow {
@@ -324,6 +328,37 @@ interface DusWalletSqlRow {
   balance_after: string | number | null;
   created_at: Date | string | null;
   ticket_id: string | null;
+  draw_time_slot: Date | string | null;
+}
+
+const REPORT_TZ = process.env.REPORT_TIMEZONE?.trim() || 'Asia/Kolkata';
+
+/** Draw slot -> { drawDate: '2026-11-12', drawTime: '5:30 PM' } in the report timezone. */
+function formatDrawSlot(slot: Date | string | null): { drawDate: string; drawTime: string } {
+  if (!slot) return { drawDate: '', drawTime: '' };
+  const d = new Date(slot);
+  if (Number.isNaN(d.getTime())) return { drawDate: '', drawTime: '' };
+  const drawDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).format(d);
+  const drawTime = new Intl.DateTimeFormat('en-US', {
+    timeZone: REPORT_TZ, hour: 'numeric', minute: '2-digit', hour12: true,
+  }).format(d);
+  return { drawDate, drawTime };
+}
+
+function dusWalletAction(type: string): string {
+  switch (type) {
+    case 'bet':
+      return 'Bet placed';
+    case 'bet_cancel':
+      return 'Bet cancelled';
+    case 'claim':
+    case 'claim_all':
+      return 'Win payout';
+    default:
+      return type.replace(/_/g, ' ');
+  }
 }
 
 /**
@@ -377,23 +412,25 @@ export async function fetchDusWalletTransactions(options: {
   let paramIdx = 2;
 
   let sql = `
-    SELECT id::text AS id, user_id, type, amount, balance_after, created_at, ticket_id
-    FROM wallet_log
-    WHERE user_id = ANY($1::text[])
+    SELECT w.id::text AS id, w.user_id, w.type, w.amount, w.balance_after, w.created_at,
+           w.ticket_id, d.time_slot AS draw_time_slot
+    FROM wallet_log w
+    LEFT JOIN draws d ON d.id = w.draw_id
+    WHERE w.user_id = ANY($1::text[])
   `;
 
   if (range.from) {
-    sql += ` AND created_at >= $${paramIdx}`;
+    sql += ` AND w.created_at >= $${paramIdx}`;
     params.push(range.from);
     paramIdx += 1;
   }
   if (range.to) {
-    sql += ` AND created_at <= $${paramIdx}`;
+    sql += ` AND w.created_at <= $${paramIdx}`;
     params.push(range.to);
     paramIdx += 1;
   }
 
-  sql += ` ORDER BY created_at DESC LIMIT $${paramIdx}`;
+  sql += ` ORDER BY w.created_at DESC LIMIT $${paramIdx}`;
   params.push(limit);
 
   const rows = await dusKaDumQuery<DusWalletSqlRow>(sql, params);
@@ -404,15 +441,23 @@ export async function fetchDusWalletTransactions(options: {
     .map((row) => {
       const username = options.usernameByUserId.get(row.user_id) || '';
       const mappedType = mapDusWalletType(row.type);
+      const amount = Math.abs(toNumber(row.amount));
+      const balanceAfter = toNumber(row.balance_after);
+      const direction: 'credit' | 'debit' = row.type === 'bet' ? 'debit' : 'credit';
+      const slot = formatDrawSlot(row.draw_time_slot);
       const mapped: DusTransactionRow = {
         id: row.id,
         userId: row.user_id,
         username,
         type: mappedType,
-        amount: Math.abs(toNumber(row.amount)),
-        balanceAfter: toNumber(row.balance_after),
+        amount,
+        balanceAfter,
         createdAt: row.created_at,
         description: dusWalletDescription(row.type, row.ticket_id),
+        balanceBefore: direction === 'credit' ? balanceAfter - amount : balanceAfter + amount,
+        direction,
+        action: dusWalletAction(row.type),
+        reference: row.ticket_id ? { code: row.ticket_id, ...slot } : null,
       };
       return mapped;
     })

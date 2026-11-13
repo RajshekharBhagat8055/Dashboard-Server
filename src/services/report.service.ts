@@ -269,6 +269,29 @@ const loadPublishedResultsBySlot = async (
   return bySlot;
 };
 
+/** Short wallet-action label for the Transaction Report. */
+const skillTransactionAction = (type: string): string => {
+  switch (type) {
+    case 'BET_PLACEMENT':
+      return 'Bet placed';
+    case 'WINNING_PAYOUT':
+    case 'WINNER_PAYOUT':
+      return 'Win payout';
+    case 'BET_REFUND':
+      return 'Bet cancelled';
+    case 'DEPOSIT':
+      return 'Credit added';
+    case 'WITHDRAWAL':
+      return 'Credit withdrawn';
+    case 'ADMIN_ADJUSTMENT':
+      return 'Admin adjustment';
+    case 'LOSER_CONTRIBUTION':
+      return 'Loss contribution';
+    default:
+      return type.replace(/_/g, ' ').toLowerCase();
+  }
+};
+
 const getTransactionTypeFilter = (type?: string): string[] | null => {
   if (!type || type === 'all') return null;
 
@@ -733,21 +756,50 @@ export class ReportService {
       .limit(MERGE_CAP)
       .toArray();
 
-    const skillRows = transactions.map((tx) => ({
-      id: tx._id.toString(),
-      userId: String(tx.destination?.userId || tx.source?.userId || ''),
-      username:
-        getUserByTicketUserId(userMap, tx.destination?.userId)?.username ||
-        getUserByTicketUserId(userMap, tx.source?.userId)?.username ||
-        tx.destination?.username ||
-        tx.source?.username ||
-        'unknown_user',
-      type: String(tx.type || ''),
-      amount: Number(tx.amount || 0),
-      balanceAfter: Number(tx.balances?.destinationBalanceAfter ?? tx.balances?.sourceBalanceAfter ?? 0),
-      createdAt: tx.createdAt,
-      description: String(tx.metadata?.reason || tx.type || ''),
-    }));
+    const scopedIdSet = new Set(scopedUserIdStrings);
+    const skillRows = transactions.map((tx) => {
+      // Which side of the transaction is the scoped user's wallet?
+      const destIsUser =
+        tx.destination?.type === 'USER' &&
+        (!tx.source?.userId || scopedIdSet.has(String(tx.destination?.userId)));
+      const direction: 'credit' | 'debit' = destIsUser ? 'credit' : 'debit';
+      const amount = Number(tx.amount || 0);
+      const before = destIsUser
+        ? tx.balances?.destinationBalanceBefore
+        : tx.balances?.sourceBalanceBefore;
+      const after = destIsUser
+        ? tx.balances?.destinationBalanceAfter
+        : tx.balances?.sourceBalanceAfter;
+      const balanceAfter = Number(
+        after ?? tx.balances?.destinationBalanceAfter ?? tx.balances?.sourceBalanceAfter ?? 0,
+      );
+      const balanceBefore = Number(
+        before ?? (direction === 'credit' ? balanceAfter - amount : balanceAfter + amount),
+      );
+      const refs = tx.references || {};
+      const code = String(refs.gameId || '');
+      return {
+        id: tx._id.toString(),
+        userId: String(tx.destination?.userId || tx.source?.userId || ''),
+        username:
+          getUserByTicketUserId(userMap, tx.destination?.userId)?.username ||
+          getUserByTicketUserId(userMap, tx.source?.userId)?.username ||
+          tx.destination?.username ||
+          tx.source?.username ||
+          'unknown_user',
+        type: String(tx.type || ''),
+        amount,
+        balanceAfter,
+        balanceBefore,
+        direction,
+        action: skillTransactionAction(String(tx.type || '')),
+        reference: code
+          ? { code, drawDate: String(refs.drawDate || ''), drawTime: String(refs.drawTime || '') }
+          : null,
+        createdAt: tx.createdAt,
+        description: String(tx.metadata?.reason || tx.type || ''),
+      };
+    });
 
     const usernameByUserId = new Map<string, string>();
     for (const [id, user] of userMap) usernameByUserId.set(id, user.username);
